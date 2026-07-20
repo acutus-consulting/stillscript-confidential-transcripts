@@ -1,7 +1,7 @@
 #define MyAppName "DanScribe AI"
 #define MyAppVersion "3.0"
 #define MyAppPublisher "DanScribe"
-#define MyAppExeName "DanScribe_v2.exe"
+#define MyAppExeName "DanScribe_v3.exe"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -28,7 +28,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "C:\Users\danie\Danscribe\dist\DanScribe_v2.exe";         DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\danie\Danscribe\dist\DanScribe_v3.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\danie\Danscribe\DanScribe_UserGuide_v2.pdf";    DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\danie\Danscribe\DanScribe_ReleaseNotes_v2.pdf"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\danie\Danscribe\README.md";                      DestDir: "{app}"; Flags: ignoreversion

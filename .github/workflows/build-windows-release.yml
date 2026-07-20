@@ -1,7 +1,12 @@
 name: Build Windows executable
 
-# Builds DanScribe_v2.exe on a real Windows runner (PyInstaller cannot
-# cross-compile) and attaches it to the matching GitHub release.
+# Builds the DanScribe_v3.exe binary on a real Windows runner (PyInstaller
+# cannot cross-compile) and attaches it to the matching GitHub release.
+#
+# NOTE: EXE_NAME below is the *output artifact* name shown on the release
+# page, independent of the DanScribe_v2.py source filename. Bump it on the
+# next major version release (in this file AND in DanScribe_v2.iss's
+# MyAppExeName) so the download always matches the release it's attached to.
 #
 # Runs automatically when a version tag (vX.Y.Z) is pushed, or manually via
 # the Actions tab / `gh workflow run` for an existing tag.
@@ -18,6 +23,9 @@ on:
 
 permissions:
   contents: write
+
+env:
+  EXE_NAME: DanScribe_v3
 
 jobs:
   build:
@@ -48,13 +56,15 @@ jobs:
           pip install pyinstaller
 
       - name: Build executable
+        shell: bash
         run: >
-          pyinstaller --onefile --windowed --name "DanScribe_v2"
+          pyinstaller --onefile --windowed --name "$EXE_NAME"
           --add-data "logo.jpg;."
           --icon "danscribe.ico"
           DanScribe_v2.py
 
       - name: Upload .exe to the GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ steps.tag.outputs.value }}" "dist/DanScribe_v2.exe" --clobber
+        run: gh release upload "${{ steps.tag.outputs.value }}" "dist/${EXE_NAME}.exe" --clobber

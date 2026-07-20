@@ -86,10 +86,14 @@ python DanScribe_v2.py
 ## Building the EXE
 
 ```bash
-pyinstaller --onefile --windowed --name "DanScribe_v2" --add-data "logo.jpg;." --icon "danscribe.ico" DanScribe_v2.py
+pyinstaller --onefile --windowed --name "DanScribe_v3" --add-data "logo.jpg;." --icon "danscribe.ico" DanScribe_v2.py
 ```
 
-The compiled executable will be in the `dist/` folder.
+The compiled executable will be in the `dist/` folder as `DanScribe_v3.exe`.
+
+Windows builds are also produced automatically by CI — see
+`.github/workflows/build-windows-release.yml`. It runs on every pushed
+`vX.Y.Z` tag and attaches `DanScribe_v3.exe` to the matching GitHub release.
 
 ## Claude API Key
 
