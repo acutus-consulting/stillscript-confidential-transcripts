@@ -42,6 +42,7 @@ echo "  pip found ✓"
 echo "► Installing system dependencies..."
 sudo apt-get install -y \
     python3-tk \
+    python3-venv \
     ffmpeg \
     libportaudio2 \
     libsndfile1 \
@@ -58,6 +59,7 @@ mkdir -p "$DESKTOP_DIR"
 # ── Stap 5: Kopieer app-lêers ──
 echo "► Copying application files..."
 cp "$SCRIPT_DIR/DanScribe_v2.py" "$APP_DIR/DanScribe_v2.py"
+cp "$SCRIPT_DIR/requirements.txt" "$APP_DIR/requirements.txt"
 
 # Kopieer logo as dit bestaan
 if [ -f "$SCRIPT_DIR/logo.jpg" ]; then
@@ -72,19 +74,19 @@ for f in DanScribe_UserGuide_v2.pdf DanScribe_ReleaseNotes_v2.pdf README.md; do
     fi
 done
 
-# ── Stap 6: Installeer Python-pakkette ──
-echo "► Installing Python packages (this may take a few minutes)..."
-pip3 install --user \
-    openai-whisper \
-    customtkinter \
-    pillow \
-    anthropic \
-    python-docx \
-    keyring \
-    librosa \
-    scikit-learn \
-    numpy
+# ── Stap 6: Skep 'n geïsoleerde virtuele omgewing ──
+# Modern Debian/Ubuntu (PEP 668) blocks "pip install" against the system
+# Python. A venv is never "externally managed", so this sidesteps that
+# restriction cleanly instead of forcing it with --break-system-packages.
+echo "► Setting up an isolated Python environment..."
+if [ ! -d "$APP_DIR/venv" ]; then
+    python3 -m venv "$APP_DIR/venv"
+fi
+echo "  Virtual environment ready ✓"
 
+echo "► Installing Python packages (this may take a few minutes)..."
+"$APP_DIR/venv/bin/pip" install --upgrade pip --quiet
+"$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 echo "  Python packages installed ✓"
 
 # ── Stap 7: Skep uitvoerbare skrip ──
@@ -92,7 +94,7 @@ echo "► Creating launcher script..."
 cat > "$BIN_DIR/danscribe-ai" << LAUNCHER
 #!/bin/bash
 cd "$APP_DIR"
-python3 "$APP_DIR/DanScribe_v2.py" "\$@"
+"$APP_DIR/venv/bin/python3" "$APP_DIR/DanScribe_v2.py" "\$@"
 LAUNCHER
 chmod +x "$BIN_DIR/danscribe-ai"
 echo "  Launcher created at $BIN_DIR/danscribe-ai ✓"
