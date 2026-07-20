@@ -1,0 +1,60 @@
+name: Build Windows executable
+
+# Builds DanScribe_v2.exe on a real Windows runner (PyInstaller cannot
+# cross-compile) and attaches it to the matching GitHub release.
+#
+# Runs automatically when a version tag (vX.Y.Z) is pushed, or manually via
+# the Actions tab / `gh workflow run` for an existing tag.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the .exe to (e.g. v3.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: >
+          pyinstaller --onefile --windowed --name "DanScribe_v2"
+          --add-data "logo.jpg;."
+          --icon "danscribe.ico"
+          DanScribe_v2.py
+
+      - name: Upload .exe to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.tag.outputs.value }}" "dist/DanScribe_v2.exe" --clobber
