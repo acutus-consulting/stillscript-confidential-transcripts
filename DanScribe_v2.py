@@ -51,7 +51,7 @@ _KEYRING_USER = "claude_api_key"
 
 # Claude model used for AI summaries. Kept as a single constant so it can be
 # updated in one place when Anthropic retires a model snapshot.
-CLAUDE_MODEL = "claude-sonnet-5"
+CLAUDE_MODEL = "claude-opus-4-8"
 
 
 def _get_api_key(config):
