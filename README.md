@@ -62,19 +62,19 @@
 ## Dependencies (running from source)
 
 ```bash
-pip install openai-whisper customtkinter pillow anthropic python-docx
+pip install -r requirements.txt
 ```
 
 ## Running from Source
 
 ```bash
-python danscribe_v2.py
+python DanScribe_v2.py
 ```
 
 ## Building the EXE
 
 ```bash
-pyinstaller --onefile --windowed --name "DanScribe_v2" --add-data "logo.jpg;." --icon "danscribe.ico" danscribe_v2.py
+pyinstaller --onefile --windowed --name "DanScribe_v2" --add-data "logo.jpg;." --icon "danscribe.ico" DanScribe_v2.py
 ```
 
 The compiled executable will be in the `dist/` folder.
@@ -86,7 +86,11 @@ To use the AI Summary feature:
 2. Create an API key
 3. Open DanScribe AI → ⚙️ Settings → paste your key
 
-Your key is stored locally on your device only.
+Your key is stored locally on your device only. When available, it is saved in
+your operating system's secure keyring (Windows Credential Manager, macOS
+Keychain, or the Linux Secret Service). If no keyring backend is present, it
+falls back to a permission-restricted config file (`~/.danscribe_config.json`,
+readable only by your user account).
 
 ## Output
 

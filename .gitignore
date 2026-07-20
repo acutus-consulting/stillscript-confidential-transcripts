@@ -1,3 +1,20 @@
-danscribe_config.json
-danscribe_config.json
-danscribe_config.json
+# DanScribe local config & logs (never commit — may contain an API key)
+.danscribe_config.json
+.danscribe.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# OS cruft
+.DS_Store
+Thumbs.db

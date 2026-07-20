@@ -1,0 +1,25 @@
+# DanScribe AI — runtime dependencies
+# Install with:  pip install -r requirements.txt
+
+# Core UI + imaging
+customtkinter>=5.2.0
+pillow>=9.0.0
+
+# Speech-to-text (Whisper)
+openai-whisper>=20231117
+
+# AI meeting summaries (Claude)
+anthropic>=0.40.0
+
+# Word (.docx) output
+python-docx>=0.8.11
+
+# Secure local storage of the Claude API key (optional but recommended;
+# the app falls back to a permission-restricted config file if unavailable)
+keyring>=24.0.0
+
+# Speaker identification (diarization) — optional.
+# If these are absent the app falls back to pause-based speaker detection.
+librosa>=0.10.0
+scikit-learn>=1.3.0
+numpy>=1.24.0

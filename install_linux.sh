@@ -80,9 +80,10 @@ pip3 install --user \
     pillow \
     anthropic \
     python-docx \
+    keyring \
     librosa \
     scikit-learn \
-    2>/dev/null
+    numpy
 
 echo "  Python packages installed ✓"
 

@@ -1,6 +1,9 @@
 import os
 import sys
+import io
 import json
+import base64
+import logging
 import threading
 import webbrowser
 from pathlib import Path
@@ -9,6 +12,26 @@ from PIL import Image
 import whisper
 from tkinter import filedialog, messagebox
 import anthropic
+
+# Optional: use the OS keyring for secure API-key storage when available.
+try:
+    import keyring
+    _HAS_KEYRING = True
+except Exception:
+    _HAS_KEYRING = False
+
+# ─────────────────────────────────────────────
+#  LOGGING
+# ─────────────────────────────────────────────
+# Log to a file in the user's home dir. A windowed .exe has no console, so
+# print() output is invisible — logging is the only way to diagnose issues.
+LOG_PATH = os.path.join(Path.home(), ".danscribe.log")
+logging.basicConfig(
+    filename=LOG_PATH,
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+)
+logger = logging.getLogger("danscribe")
 
 # ─────────────────────────────────────────────
 #  HELPER FUNCTIONS
@@ -23,26 +46,88 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 CONFIG_PATH = os.path.join(Path.home(), ".danscribe_config.json")
+_KEYRING_SERVICE = "DanScribe"
+_KEYRING_USER = "claude_api_key"
+
+# Claude model used for AI summaries. Kept as a single constant so it can be
+# updated in one place when Anthropic retires a model snapshot.
+CLAUDE_MODEL = "claude-sonnet-5"
+
+
+def _get_api_key(config):
+    """Read the Claude API key from the OS keyring, falling back to the config file."""
+    if _HAS_KEYRING:
+        try:
+            key = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USER)
+            if key:
+                return key
+        except Exception as e:
+            logger.warning("Keyring read failed, falling back to config file: %s", e)
+    return config.get("api_key", "")
+
+
+def _set_api_key(config, api_key):
+    """Store the API key securely. Prefer the OS keyring; never leave it in the JSON file."""
+    config.pop("api_key", None)  # never persist the key in plaintext JSON
+    if _HAS_KEYRING:
+        try:
+            if api_key:
+                keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER, api_key)
+            else:
+                try:
+                    keyring.delete_password(_KEYRING_SERVICE, _KEYRING_USER)
+                except Exception:
+                    pass
+            return
+        except Exception as e:
+            logger.warning("Keyring write failed, storing key in config file: %s", e)
+    # Fallback only when no keyring backend is available.
+    config["api_key"] = api_key
+
 
 def load_config():
     defaults = {"api_key": "", "last_model": "Small (Accurate - 244MB)", "last_language": "Auto-Detect"}
-    if os.path.exists(CONFIG_PATH):
+    if not os.path.exists(CONFIG_PATH):
+        return defaults
+    try:
         with open(CONFIG_PATH, "r") as f:
             config = json.load(f)
-        # Migrate old Afrikaans model names to English
-        old_to_new = {
-            "Base (Vinnig - 74MB)": "Base (Fast - 74MB)",
-            "Small (Akkuraat - 244MB)": "Small (Accurate - 244MB)",
-            "Medium (Professioneel - 769MB)": "Medium (Professional - 769MB)"
-        }
-        if config.get("last_model") in old_to_new:
-            config["last_model"] = old_to_new[config["last_model"]]
-        return config
-    return defaults
+        if not isinstance(config, dict):
+            raise ValueError("config is not a JSON object")
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        logger.error("Could not read config (%s); using defaults.", e)
+        return defaults
+
+    # Merge defaults so a partial/old config never has missing keys.
+    merged = {**defaults, **config}
+
+    # Migrate old Afrikaans model names to English
+    old_to_new = {
+        "Base (Vinnig - 74MB)": "Base (Fast - 74MB)",
+        "Small (Akkuraat - 244MB)": "Small (Accurate - 244MB)",
+        "Medium (Professioneel - 769MB)": "Medium (Professional - 769MB)"
+    }
+    if merged.get("last_model") in old_to_new:
+        merged["last_model"] = old_to_new[merged["last_model"]]
+
+    # Validate persisted choices against known values.
+    if merged.get("last_model") not in MODELS:
+        merged["last_model"] = defaults["last_model"]
+    if merged.get("last_language") not in LANG_CODES:
+        merged["last_language"] = defaults["last_language"]
+    return merged
 
 def save_config(data):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(data, f)
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(data, f)
+        # Restrict to owner read/write so the config isn't world-readable.
+        try:
+            os.chmod(CONFIG_PATH, 0o600)
+        except OSError:
+            pass  # e.g. on filesystems that don't support chmod (some Windows setups)
+    except OSError as e:
+        logger.error("Could not save config: %s", e)
 
 # ─────────────────────────────────────────────
 #  CONFIGURATION DATA
@@ -87,8 +172,9 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkLabel(self, text="Claude API Key:", font=("Arial", 13)).pack(pady=(10, 2))
         self.api_entry = ctk.CTkEntry(self, width=420, show="•", placeholder_text="sk-ant-...")
         self.api_entry.pack(pady=5)
-        if config.get("api_key"):
-            self.api_entry.insert(0, config["api_key"])
+        existing_key = _get_api_key(config)
+        if existing_key:
+            self.api_entry.insert(0, existing_key)
 
         # Clickable link
         link_label = ctk.CTkLabel(
@@ -115,7 +201,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def save(self):
         config = load_config()
-        config["api_key"] = self.api_entry.get().strip()
+        _set_api_key(config, self.api_entry.get().strip())
         save_config(config)
         messagebox.showinfo("DanScribe AI", "Settings saved!")
         self.destroy()
@@ -184,13 +270,25 @@ class DanScribeApp(ctk.CTk):
 
         self._build_ui()
 
+    # ── THREAD-SAFE UI UPDATES ──────────────
+
+    def _ui(self, func, *args, **kwargs):
+        """Marshal a UI update onto the main thread.
+
+        Tkinter is not thread-safe; worker threads must not touch widgets
+        directly. `after(0, ...)` queues the call on the main event loop.
+        """
+        try:
+            self.after(0, lambda: func(*args, **kwargs))
+        except Exception as e:
+            logger.error("UI update failed: %s", e)
+
     # ── BUILD UI ────────────────────────────
 
     def _build_ui(self):
         ctk.set_appearance_mode("dark")
 
         # ── Top banner: Logo + SA Flag side by side ──
-        import io, base64
         banner = ctk.CTkFrame(self, fg_color="transparent")
         banner.pack(pady=(10, 0), fill="x", padx=20)
 
@@ -216,7 +314,7 @@ class DanScribeApp(ctk.CTk):
             flag_label = ctk.CTkLabel(banner, image=flag_img, text="")
             flag_label.pack(side="right", padx=(0, 10))
         except Exception as e:
-            print(f"Flag load error: {e}")
+            logger.warning("Flag load error: %s", e)
 
         # Made in SA text under banner
         ctk.CTkLabel(
@@ -335,6 +433,14 @@ class DanScribeApp(ctk.CTk):
         if not file_path:
             return
 
+        # Validate the selection before doing any heavy work.
+        if not os.path.isfile(file_path):
+            messagebox.showerror("Error", "The selected file could not be found.")
+            return
+        if os.path.getsize(file_path) == 0:
+            messagebox.showerror("Error", "The selected file is empty.")
+            return
+
         # Save last used settings
         self.config_data["last_model"] = self.model_var.get()
         self.config_data["last_language"] = self.lang_var.get()
@@ -357,8 +463,8 @@ class DanScribeApp(ctk.CTk):
         def run():
             try:
                 model = get_model(model_name)
-                self.progress_bar.set(0.3)
-                self.status_label.configure(text="Status: Processing audio...")
+                self._ui(self.progress_bar.set, 0.3)
+                self._ui(self.status_label.configure, text="Status: Processing audio...")
 
                 af_prompt = "Hierdie is 'n Afrikaanse transkripsie. Gebruik korrekte spelling en sinsbou."
                 if lang_code == "af":
@@ -368,10 +474,10 @@ class DanScribeApp(ctk.CTk):
                 else:
                     result = model.transcribe(file_path, task=whisper_task)
 
-                self.progress_bar.set(0.7)
+                self._ui(self.progress_bar.set, 0.7)
 
                 if do_diarize:
-                    self.status_label.configure(text="Status: Identifying speakers...")
+                    self._ui(self.status_label.configure, text="Status: Identifying speakers...")
                     segments = self._diarize(result, max_speakers=num_speakers, audio_path=file_path)
                     self.diarized_segments = segments
                     transcript_text = self._segments_to_text(segments, self.speaker_name_map)
@@ -382,22 +488,24 @@ class DanScribeApp(ctk.CTk):
                 self.current_transcript = transcript_text
                 output_path = self._save_transcript(transcript_text, file_path)
 
-                self.progress_bar.set(1.0)
-                self.status_label.configure(text="✅ Done!")
-                self.output_box.insert("1.0", transcript_text[:2000] + ("..." if len(transcript_text) > 2000 else ""))
+                preview = transcript_text[:2000] + ("..." if len(transcript_text) > 2000 else "")
+                self._ui(self.progress_bar.set, 1.0)
+                self._ui(self.status_label.configure, text="✅ Done!")
+                self._ui(self.output_box.insert, "1.0", preview)
 
                 if do_diarize and self.diarized_segments:
-                    self.name_btn.configure(state="normal")
-                self.summarize_btn.configure(state="normal")
+                    self._ui(self.name_btn.configure, state="normal")
+                self._ui(self.summarize_btn.configure, state="normal")
 
-                messagebox.showinfo("DanScribe AI", f"Transcription complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
+                self._ui(messagebox.showinfo, "DanScribe AI", f"Transcription complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
 
             except Exception as e:
-                messagebox.showerror("Error", f"An error occurred:\n{str(e)}")
-                self.status_label.configure(text="Status: Error")
+                logger.error("Transcription failed: %s", e, exc_info=True)
+                self._ui(messagebox.showerror, "Error", f"An error occurred:\n{e}")
+                self._ui(self.status_label.configure, text="Status: Error")
 
-            self.main_btn.configure(state="normal")
-            self.progress_bar.set(0)
+            self._ui(self.main_btn.configure, state="normal")
+            self._ui(self.progress_bar.set, 0)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -497,8 +605,10 @@ class DanScribeApp(ctk.CTk):
 
             return result if result else [{"speaker": "Speaker 1", "text": whisper_result["text"]}]
 
+        except ImportError as e:
+            logger.warning("Speaker-analysis libraries unavailable (%s); using pause-based fallback.", e)
         except Exception as e:
-            print(f"Pitch-based diarization failed ({e}), falling back to pause analysis.")
+            logger.warning("Pitch-based diarization failed (%s); using pause-based fallback.", e)
 
         # ── Fallback: pause-based detection ─────────────
         pauses = []
@@ -559,7 +669,7 @@ class DanScribeApp(ctk.CTk):
 
     def summarize_with_claude(self):
         config = load_config()
-        api_key = config.get("api_key", "").strip()
+        api_key = _get_api_key(config).strip()
 
         if not api_key:
             messagebox.showwarning(
@@ -594,30 +704,43 @@ Transcription:
 Write the summary in the same language as the transcription."""
 
                 message = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=1500,
+                    model=CLAUDE_MODEL,
+                    max_tokens=2000,
+                    # Disable extended thinking: a summary doesn't need it, and it
+                    # keeps latency and token cost down (Sonnet 5 thinks by default).
+                    thinking={"type": "disabled"},
                     messages=[{"role": "user", "content": prompt}]
                 )
 
                 summary = message.content[0].text
                 output_path = self._save_summary(summary)
 
-                self.progress_bar.set(1.0)
-                self.status_label.configure(text="✅ Summary complete!")
-                self.output_box.delete("1.0", "end")
-                self.output_box.insert("1.0", summary)
+                self._ui(self.progress_bar.set, 1.0)
+                self._ui(self.status_label.configure, text="✅ Summary complete!")
+                self._ui(self.output_box.delete, "1.0", "end")
+                self._ui(self.output_box.insert, "1.0", summary)
 
-                messagebox.showinfo("DanScribe AI", f"Summary complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
+                self._ui(messagebox.showinfo, "DanScribe AI", f"Summary complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
 
             except anthropic.AuthenticationError:
-                messagebox.showerror("Invalid API Key", "Please check your Claude API key in Settings.")
-                self.status_label.configure(text="Status: API error")
+                logger.warning("Claude authentication failed")
+                self._ui(messagebox.showerror, "Invalid API Key", "Please check your Claude API key in Settings.")
+                self._ui(self.status_label.configure, text="Status: API error")
+            except anthropic.RateLimitError:
+                logger.warning("Claude rate limit hit")
+                self._ui(messagebox.showerror, "Rate Limited", "Too many requests. Please wait a moment and try again.")
+                self._ui(self.status_label.configure, text="Status: Rate limited")
+            except anthropic.APIError as e:
+                logger.error("Claude API error: %s", e, exc_info=True)
+                self._ui(messagebox.showerror, "Error", f"Claude API error:\n{e}")
+                self._ui(self.status_label.configure, text="Status: Error")
             except Exception as e:
-                messagebox.showerror("Error", f"Claude API error:\n{str(e)}")
-                self.status_label.configure(text="Status: Error")
+                logger.critical("Unexpected error during summary: %s", e, exc_info=True)
+                self._ui(messagebox.showerror, "Error", f"An unexpected error occurred:\n{e}")
+                self._ui(self.status_label.configure, text="Status: Error")
 
-            self.summarize_btn.configure(state="normal")
-            self.progress_bar.set(0)
+            self._ui(self.summarize_btn.configure, state="normal")
+            self._ui(self.progress_bar.set, 0)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -628,7 +751,7 @@ Write the summary in the same language as the transcription."""
         if platform.system() == "Windows":
             base = Path.home() / "Downloads"
         else:
-            # Linux/Mac: gebruik ~/Documents of ~/Downloads indien beskikbaar
+            # Linux/Mac: prefer ~/Documents, fall back to ~/Downloads.
             docs = Path.home() / "Documents"
             base = docs if docs.exists() else Path.home() / "Downloads"
         path = str(base / "DanScribe_Transcriptions")
@@ -742,7 +865,7 @@ Write the summary in the same language as the transcription."""
         try:
             self._make_docx(text, docx_path, "transcript")
         except Exception as e:
-            print(f"Warning: Could not create .docx: {e}")
+            logger.warning("Could not create .docx: %s", e)
         return out_dir
 
     def _save_summary(self, text):
@@ -756,7 +879,7 @@ Write the summary in the same language as the transcription."""
         try:
             self._make_docx(text, docx_path, "summary")
         except Exception as e:
-            print(f"Warning: Could not create .docx: {e}")
+            logger.warning("Could not create .docx: %s", e)
         return out_dir
 
 
@@ -766,8 +889,7 @@ Write the summary in the same language as the transcription."""
 
 if __name__ == "__main__":
     import multiprocessing
-    multiprocessing.freeze_support()  # Nodig vir Windows .exe
-    load_flag_image()
+    multiprocessing.freeze_support()  # Required for the Windows .exe build
     ctk.set_appearance_mode("dark")
     app = DanScribeApp()
     app.mainloop()
