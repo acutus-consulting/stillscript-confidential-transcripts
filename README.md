@@ -1,8 +1,20 @@
-# DanScribe AI — Professional Edition v2.0
+# DanScribe AI — Professional Edition v3.0
 
 **DanScribe AI** is a desktop transcription tool powered by OpenAI's Whisper engine. Built in South Africa, for South Africans. It converts audio recordings into text across all 11 official South African languages, with speaker identification and AI-powered meeting summaries via Claude.
 
 ---
+
+## What's New in v3.0
+
+- **Fixed a startup crash** — the app could fail to launch due to a stray reference to an undefined function.
+- **Secure API key storage** — the Claude API key now lives in your OS keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service) instead of a plaintext file; falls back to a permission-restricted file if no keyring is available.
+- **AI Summary model updated** — now uses Claude Opus 4.8.
+- **Diagnostic logging** — a log file (`~/.danscribe.log`) now captures errors and warnings for easier troubleshooting.
+- **More robust error handling** — clearer messages for authentication failures, rate limits, and API errors; corrupted settings files no longer crash the app.
+- **Thread-safety fixes** — background transcription/summary work no longer touches the UI directly, preventing rare crashes and freezes.
+- **File validation** — the app now checks that a selected audio file actually exists and isn't empty before processing.
+- **Added `requirements.txt`** for reproducible installs.
+- **Repository cleanup** — removed unused legacy source files and fixed a `.gitignore` bug that let the local config file be tracked by git.
 
 ## What's New in v2.0
 
