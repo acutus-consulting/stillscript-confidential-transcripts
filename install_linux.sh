@@ -86,6 +86,15 @@ echo "  Virtual environment ready ✓"
 
 echo "► Installing Python packages (this may take a few minutes)..."
 "$APP_DIR/venv/bin/pip" install --upgrade pip --quiet
+
+# Install the CPU-only PyTorch build first. PyPI's default "torch" package
+# bundles the full NVIDIA CUDA toolkit (several extra GB), which almost no
+# laptop needs — Whisper's base/small models run fine on CPU. Installing
+# this first satisfies openai-whisper's torch dependency below, so pip
+# won't pull the much larger CUDA build afterward.
+echo "  Installing PyTorch (CPU-only build)..."
+"$APP_DIR/venv/bin/pip" install torch --index-url https://download.pytorch.org/whl/cpu
+
 "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 echo "  Python packages installed ✓"
 
