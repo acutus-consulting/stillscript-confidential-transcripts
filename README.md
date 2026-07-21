@@ -1,8 +1,14 @@
-# DanScribe AI — Professional Edition v3.0
+# DanScribe AI — Professional Edition v3.0.1
 
 **DanScribe AI** is a desktop transcription tool powered by OpenAI's Whisper engine. Built in South Africa, for South Africans. It converts audio recordings into text across all 11 official South African languages, with speaker identification and AI-powered meeting summaries via Claude.
 
 ---
+
+## What's New in v3.0.1
+
+- **Reduced Afrikaans→Dutch spelling drift** — Whisper's Afrikaans transcription prompt is now a longer, natural passage (including "nie ... nie" double negation, a construction Dutch doesn't have) instead of a short meta-instruction, giving the model a much stronger signal toward Afrikaans over Dutch orthography. For best results with Afrikaans audio, the Medium model is also recommended over Base/Small.
+- **Linux installer fixes** — resolved a `pip install` failure on modern Debian/Ubuntu-based systems (PEP 668 "externally-managed-environment") by installing into an isolated virtual environment; PyTorch now installs as a CPU-only build, cutting the download size dramatically for the vast majority of users without an NVIDIA GPU.
+- **CI-built Windows releases** — Windows `.exe` builds are now produced automatically by GitHub Actions on every tagged release, since PyInstaller requires building on Windows itself.
 
 ## What's New in v3.0
 
