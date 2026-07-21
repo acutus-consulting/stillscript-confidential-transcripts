@@ -466,7 +466,20 @@ class DanScribeApp(ctk.CTk):
                 self._ui(self.progress_bar.set, 0.3)
                 self._ui(self.status_label.configure, text="Status: Processing audio...")
 
-                af_prompt = "Hierdie is 'n Afrikaanse transkripsie. Gebruik korrekte spelling en sinsbou."
+                # Whisper's initial_prompt biases the decoder toward the style/
+                # spelling of the prompt text itself, not toward instructions it
+                # "understands" — a short meta-sentence gives it little to latch
+                # onto. Afrikaans and Dutch share a lot of vocabulary, so smaller
+                # models especially can drift into Dutch orthography even with
+                # language="af" forced. A longer, natural Afrikaans passage with
+                # constructions Dutch doesn't have (like "nie ... nie" double
+                # negation) gives the decoder a much stronger signal.
+                af_prompt = (
+                    "Goeiemôre almal, baie dankie dat julle almal hier kon kom. "
+                    "Ons gaan vandag praat oor die begroting en die volgende "
+                    "stappe wat ons moet neem. Dit is nie maklik nie, maar ons "
+                    "sal dit saam reg kry. Het julle dalk enige vrae daaroor?"
+                )
                 if lang_code == "af":
                     result = model.transcribe(file_path, task=whisper_task, language="af", initial_prompt=af_prompt)
                 elif lang_code:
