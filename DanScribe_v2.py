@@ -481,18 +481,13 @@ class DanScribeApp(ctk.CTk):
                     "sal dit saam reg kry. Het julle dalk enige vrae daaroor?"
                 )
                 if lang_code == "af":
-                    # By default Whisper conditions each ~30s window on its own
-                    # decoded text from the previous window (condition_on_previous_
-                    # text=True) — not on initial_prompt, which only applies to the
-                    # very first window. If the model drifts to Dutch early, that
-                    # drift becomes the context for the next window, compounding
-                    # for the rest of the recording. Disabling it stops each
-                    # window from inheriting a previous window's Dutch drift, so
-                    # every window gets an independent shot at staying Afrikaans.
-                    result = model.transcribe(
-                        file_path, task=whisper_task, language="af",
-                        initial_prompt=af_prompt, condition_on_previous_text=False,
-                    )
+                    # Tried condition_on_previous_text=False here to stop Dutch
+                    # drift from compounding across windows — real-world testing
+                    # showed it made things worse (hallucinated Unicode noise,
+                    # injected English words, repetition loops), since the
+                    # previous-window context also suppresses that kind of
+                    # hallucination. Reverted; back to Whisper's default.
+                    result = model.transcribe(file_path, task=whisper_task, language="af", initial_prompt=af_prompt)
                 elif lang_code:
                     result = model.transcribe(file_path, task=whisper_task, language=lang_code)
                 else:
