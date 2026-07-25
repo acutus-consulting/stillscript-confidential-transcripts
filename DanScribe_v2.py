@@ -153,6 +153,46 @@ def get_model(model_name):
         _model_cache[model_name] = whisper.load_model(model_name)
     return _model_cache[model_name]
 
+
+def transcribe_audio(path, *, language, task, model_name):
+    """Run Whisper on `path` and return its result dict ({"text", "segments", ...}).
+
+    This is the single seam through which all transcription flows. The three
+    branches below are the exact language-dispatch logic (Afrikaans prompt,
+    other forced language, auto-detect) that previously lived inline in run().
+    Whisper is deterministic at temperature=0, so for fixed inputs this returns
+    byte-identical output regardless of where it is called from.
+    """
+    model = get_model(model_name)
+
+    # Whisper's initial_prompt biases the decoder toward the style/
+    # spelling of the prompt text itself, not toward instructions it
+    # "understands" — a short meta-sentence gives it little to latch
+    # onto. Afrikaans and Dutch share a lot of vocabulary, so smaller
+    # models especially can drift into Dutch orthography even with
+    # language="af" forced. A longer, natural Afrikaans passage with
+    # constructions Dutch doesn't have (like "nie ... nie" double
+    # negation) gives the decoder a much stronger signal.
+    af_prompt = (
+        "Goeiemôre almal, baie dankie dat julle almal hier kon kom. "
+        "Ons gaan vandag praat oor die begroting en die volgende "
+        "stappe wat ons moet neem. Dit is nie maklik nie, maar ons "
+        "sal dit saam reg kry. Het julle dalk enige vrae daaroor?"
+    )
+    if language == "af":
+        # Tried condition_on_previous_text=False here to stop Dutch
+        # drift from compounding across windows — real-world testing
+        # showed it made things worse (hallucinated Unicode noise,
+        # injected English words, repetition loops), since the
+        # previous-window context also suppresses that kind of
+        # hallucination. Reverted; back to Whisper's default.
+        result = model.transcribe(path, task=task, language="af", initial_prompt=af_prompt)
+    elif language:
+        result = model.transcribe(path, task=task, language=language)
+    else:
+        result = model.transcribe(path, task=task)
+    return result
+
 # ─────────────────────────────────────────────
 #  SETTINGS WINDOW
 # ─────────────────────────────────────────────
@@ -462,36 +502,15 @@ class DanScribeApp(ctk.CTk):
 
         def run():
             try:
-                model = get_model(model_name)
                 self._ui(self.progress_bar.set, 0.3)
                 self._ui(self.status_label.configure, text="Status: Processing audio...")
 
-                # Whisper's initial_prompt biases the decoder toward the style/
-                # spelling of the prompt text itself, not toward instructions it
-                # "understands" — a short meta-sentence gives it little to latch
-                # onto. Afrikaans and Dutch share a lot of vocabulary, so smaller
-                # models especially can drift into Dutch orthography even with
-                # language="af" forced. A longer, natural Afrikaans passage with
-                # constructions Dutch doesn't have (like "nie ... nie" double
-                # negation) gives the decoder a much stronger signal.
-                af_prompt = (
-                    "Goeiemôre almal, baie dankie dat julle almal hier kon kom. "
-                    "Ons gaan vandag praat oor die begroting en die volgende "
-                    "stappe wat ons moet neem. Dit is nie maklik nie, maar ons "
-                    "sal dit saam reg kry. Het julle dalk enige vrae daaroor?"
+                result = transcribe_audio(
+                    file_path,
+                    language=lang_code,
+                    task=whisper_task,
+                    model_name=model_name,
                 )
-                if lang_code == "af":
-                    # Tried condition_on_previous_text=False here to stop Dutch
-                    # drift from compounding across windows — real-world testing
-                    # showed it made things worse (hallucinated Unicode noise,
-                    # injected English words, repetition loops), since the
-                    # previous-window context also suppresses that kind of
-                    # hallucination. Reverted; back to Whisper's default.
-                    result = model.transcribe(file_path, task=whisper_task, language="af", initial_prompt=af_prompt)
-                elif lang_code:
-                    result = model.transcribe(file_path, task=whisper_task, language=lang_code)
-                else:
-                    result = model.transcribe(file_path, task=whisper_task)
 
                 self._ui(self.progress_bar.set, 0.7)
 
