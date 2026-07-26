@@ -1,25 +1,39 @@
 # DanScribe AI — runtime dependencies
 # Install with:  pip install -r requirements.txt
+#
+# Versions are pinned to a known-working set (the versions the app is
+# developed and tested against) so CI builds are reproducible. NOTE: torch is
+# intentionally NOT listed here — it is installed separately from the CPU-only
+# PyTorch index (see the CI workflow and install_linux.sh) to avoid pulling the
+# multi-GB CUDA build. Pin torch there once a green build confirms the exact
+# CPU wheel version the index resolves.
 
 # Core UI + imaging
-customtkinter>=5.2.0
-pillow>=9.0.0
+customtkinter==5.2.2
+pillow==10.2.0
 
 # Speech-to-text (Whisper)
-openai-whisper>=20231117
+openai-whisper==20250625
 
 # AI meeting summaries (Claude)
-anthropic>=0.40.0
+anthropic==0.86.0
 
 # Word (.docx) output
-python-docx>=0.8.11
+python-docx==1.2.0
 
 # Secure local storage of the Claude API key (optional but recommended;
 # the app falls back to a permission-restricted config file if unavailable)
-keyring>=24.0.0
+keyring==24.3.1
 
 # Speaker identification (diarization) — optional.
 # If these are absent the app falls back to pause-based speaker detection.
-librosa>=0.10.0
-scikit-learn>=1.3.0
-numpy>=1.24.0
+librosa==0.11.0
+scikit-learn==1.9.0
+numpy==1.26.4
+
+# Transitive deps of the above, pinned explicitly so the whole set is locked:
+#   soundfile      — per-segment audio seek in the diarization path (via librosa)
+#   numba/llvmlite — librosa's JIT stack (must be collected when frozen)
+soundfile==0.13.1
+numba==0.64.0
+llvmlite==0.46.0
