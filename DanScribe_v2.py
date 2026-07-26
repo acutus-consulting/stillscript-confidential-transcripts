@@ -86,7 +86,7 @@ def _set_api_key(config, api_key):
 
 
 def load_config():
-    defaults = {"api_key": "", "last_model": "Small (Accurate - 244MB)", "last_language": "Auto-Detect"}
+    defaults = {"api_key": "", "last_language": "Auto-Detect"}
     if not os.path.exists(CONFIG_PATH):
         return defaults
     try:
@@ -101,18 +101,9 @@ def load_config():
     # Merge defaults so a partial/old config never has missing keys.
     merged = {**defaults, **config}
 
-    # Migrate old Afrikaans model names to English
-    old_to_new = {
-        "Base (Vinnig - 74MB)": "Base (Fast - 74MB)",
-        "Small (Akkuraat - 244MB)": "Small (Accurate - 244MB)",
-        "Medium (Professioneel - 769MB)": "Medium (Professional - 769MB)"
-    }
-    if merged.get("last_model") in old_to_new:
-        merged["last_model"] = old_to_new[merged["last_model"]]
-
-    # Validate persisted choices against known values.
-    if merged.get("last_model") not in MODELS:
-        merged["last_model"] = defaults["last_model"]
+    # Validate persisted choices against known values. (A pre-Phase-2
+    # "last_model" key may still be in the file; it is simply ignored now
+    # that mode selection replaces the model dropdown.)
     if merged.get("last_language") not in LANG_CODES:
         merged["last_language"] = defaults["last_language"]
     return merged
@@ -139,11 +130,30 @@ LANG_CODES = {
     "Siswati": "ss", "Tshivenda": "ve", "Xitsonga": "ts", "isiNdebele": "nr"
 }
 
-MODELS = {
-    "Base (Fast - 74MB)": "base",
-    "Small (Accurate - 244MB)": "small",
-    "Medium (Professional - 769MB)": "medium"
-}
+# ── Transcription modes ──────────────────────
+# "Vinnig" (Fast) is the only mode with a working engine. It runs Whisper
+# Medium through the transcribe_audio() seam — the path verified byte-for-byte
+# in Phase 1. "Akkuraat" (Accurate) is presented in the UI but disabled until
+# Phase 3 wires the large-v3 + Afrikaans-adapter engine behind it; nothing in
+# this build must ever let Accurate silently fall back to Medium.
+FAST_MODE_MODEL = "medium"
+
+# Human-readable engine label recorded in each transcript's provenance footer.
+# Phase 3 adds the accurate-mode engine (large-v3 + adapter revision SHA).
+FAST_MODE_ENGINE_LABEL = "DanScribe Fast — Whisper Medium"
+
+# Third-party attribution shown in the "Oor" (Credits) dialog. Phase 3 appends
+# the fine-tuned Afrikaans model + dataset entry (CC-BY-4.0) — one more dict,
+# no UI change.
+CREDITS = [
+    {
+        "name": "OpenAI Whisper",
+        "detail": ('Radford et al., "Robust Speech Recognition via '
+                   'Large-Scale Weak Supervision", arXiv:2212.04356'),
+        "license": "Apache License 2.0",
+        "url": "https://arxiv.org/abs/2212.04356",
+    },
+]
 
 # Model cache — prevents reloading every time
 _model_cache = {}
@@ -192,6 +202,46 @@ def transcribe_audio(path, *, language, task, model_name):
     else:
         result = model.transcribe(path, task=task)
     return result
+
+
+def build_provenance(*, mode, language_label, task, diarized, num_speakers=None):
+    """Describe which engine produced a transcript, for the audit footer.
+
+    Returns a plain dict so Phase 3 can extend it (adapter revision SHA,
+    dataset version, etc.) without any caller changing — the same seam
+    principle as transcribe_audio(). Callers pass display-level values
+    (the language *label* the user picked, not the ISO code) so the footer
+    reads the way the operator set it up.
+    """
+    from datetime import datetime
+    return {
+        "engine": FAST_MODE_ENGINE_LABEL,
+        "mode": mode,
+        "language": language_label,
+        "task": task,
+        "diarized": diarized,
+        "num_speakers": num_speakers if diarized else None,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def format_provenance_lines(provenance):
+    """Render a provenance dict as an ordered list of 'Label: value' strings,
+    shared by the .txt footer and the .docx footer so both stay in sync."""
+    task_label = "Translate to English" if provenance.get("task") == "translate" else "Original language"
+    if provenance.get("diarized"):
+        spk = provenance.get("num_speakers")
+        diar_label = f"Yes (up to {spk} speakers)" if spk else "Yes"
+    else:
+        diar_label = "No"
+    return [
+        f"Engine: {provenance.get('engine')}",
+        f"Mode: {provenance.get('mode')}",
+        f"Language setting: {provenance.get('language')}",
+        f"Task: {task_label}",
+        f"Speaker identification: {diar_label}",
+        f"Generated: {provenance.get('timestamp')}",
+    ]
 
 
 # Below this duration, _diarize() uses the whole-file librosa.load path,
@@ -274,6 +324,64 @@ class SettingsWindow(ctk.CTkToplevel):
         save_config(config)
         messagebox.showinfo("DanScribe AI", "Settings saved!")
         self.destroy()
+
+# ─────────────────────────────────────────────
+#  CREDITS / ABOUT WINDOW
+# ─────────────────────────────────────────────
+
+class CreditsWindow(ctk.CTkToplevel):
+    """Attribution surface for the models/datasets DanScribe builds on.
+
+    Driven entirely by the module-level CREDITS list — Phase 3 adds the
+    fine-tuned Afrikaans model + dataset (CC-BY-4.0) by appending one dict,
+    with no change to this window.
+    """
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("DanScribe AI — Oor / Credits")
+        self.geometry("560x420")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="ℹ️ Oor DanScribe AI", font=("Arial", 20, "bold")).pack(pady=(20, 4))
+        ctk.CTkLabel(
+            self,
+            text="DanScribe is gebou op die volgende oopbron-werk:",
+            font=("Arial", 12),
+            text_color="gray",
+        ).pack(pady=(0, 10))
+
+        frame = ctk.CTkScrollableFrame(self, width=500, height=290)
+        frame.pack(pady=5, padx=20, fill="both", expand=True)
+
+        for entry in CREDITS:
+            card = ctk.CTkFrame(frame)
+            card.pack(fill="x", pady=8, padx=4)
+
+            ctk.CTkLabel(
+                card, text=entry["name"], font=("Arial", 14, "bold"), anchor="w"
+            ).pack(fill="x", padx=12, pady=(10, 2))
+            ctk.CTkLabel(
+                card, text=entry["detail"], font=("Arial", 11), text_color="gray",
+                anchor="w", justify="left", wraplength=460
+            ).pack(fill="x", padx=12, pady=2)
+            ctk.CTkLabel(
+                card, text=f"Lisensie: {entry['license']}", font=("Arial", 11), anchor="w"
+            ).pack(fill="x", padx=12, pady=2)
+
+            url = entry.get("url")
+            if url:
+                link = ctk.CTkLabel(
+                    card, text=f"🔗 {url}", font=("Arial", 11),
+                    text_color="#4da6ff", cursor="hand2", anchor="w"
+                )
+                link.pack(fill="x", padx=12, pady=(2, 10))
+                link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+
+        ctk.CTkButton(
+            self, text="Maak toe", command=self.destroy,
+            width=160, fg_color="#1f538d"
+        ).pack(pady=(6, 16))
 
 # ─────────────────────────────────────────────
 #  SPEAKER NAME ASSIGNMENT WINDOW
@@ -400,6 +508,13 @@ class DanScribeApp(ctk.CTk):
         )
         settings_btn.place(x=480, y=10)
 
+        # Credits / About button (below Settings)
+        credits_btn = ctk.CTkButton(
+            self, text="ℹ️ Oor", command=self.open_credits,
+            width=120, height=30, fg_color="gray30"
+        )
+        credits_btn.place(x=480, y=48)
+
         # 1. Task
         ctk.CTkLabel(self, text="1. Select Task:", font=("Arial", 13, "bold")).pack(pady=(10, 2))
         self.task_var = ctk.StringVar(value="Translate to English")
@@ -416,13 +531,39 @@ class DanScribeApp(ctk.CTk):
             variable=self.lang_var, width=380
         ).pack(pady=5)
 
-        # 3. Model
-        ctk.CTkLabel(self, text="3. AI Model:", font=("Arial", 13, "bold")).pack(pady=(10, 2))
-        self.model_var = ctk.StringVar(value=self.config_data.get("last_model", "Small (Accurate - 244MB)"))
-        ctk.CTkOptionMenu(
-            self, values=list(MODELS.keys()),
-            variable=self.model_var, width=380
-        ).pack(pady=5)
+        # 3. Mode — Fast (default, active) vs Accurate (built but not yet
+        # available). Two plain buttons rather than CTkSegmentedButton because
+        # the latter can't render one segment disabled while the other is live.
+        # Phase 3 flips the Accurate button to state="normal", wires its command
+        # and branches the engine — no restructuring here.
+        ctk.CTkLabel(self, text="3. Mode:", font=("Arial", 13, "bold")).pack(pady=(10, 2))
+        self.mode_var = ctk.StringVar(value="fast")
+
+        mode_frame = ctk.CTkFrame(self, fg_color="transparent")
+        mode_frame.pack(pady=2)
+
+        self.fast_btn = ctk.CTkButton(
+            mode_frame, text="⚡ Vinnig (Fast)",
+            command=self._select_fast_mode,
+            width=185, height=40, fg_color="#1f538d", font=("Arial", 13, "bold")
+        )
+        self.fast_btn.grid(row=0, column=0, padx=(0, 8))
+
+        self.accurate_btn = ctk.CTkButton(
+            mode_frame, text="🎯 Akkuraat (Accurate)",
+            width=185, height=40, fg_color="gray30",
+            state="disabled"
+        )
+        self.accurate_btn.grid(row=0, column=1)
+
+        # "Coming soon" caption under the disabled Accurate button.
+        caption = ctk.CTkFrame(self, fg_color="transparent")
+        caption.pack(pady=(0, 4))
+        ctk.CTkLabel(caption, text="", width=185).grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkLabel(
+            caption, text="Kom binnekort", width=185,
+            font=("Arial", 10), text_color="gray"
+        ).grid(row=0, column=1)
 
         # 4. Speaker identification
         ctk.CTkLabel(self, text="4. Speaker Identification:", font=("Arial", 13, "bold")).pack(pady=(10, 2))
@@ -487,10 +628,19 @@ class DanScribeApp(ctk.CTk):
         self.output_box = ctk.CTkTextbox(self, width=560, height=180, font=("Arial", 12))
         self.output_box.pack(pady=5)
 
-    # ── SETTINGS ────────────────────────────
+    # ── MODE SELECTION ──────────────────────
+
+    def _select_fast_mode(self):
+        # Only Fast is selectable today; this keeps the state var authoritative.
+        self.mode_var.set("fast")
+
+    # ── SETTINGS / CREDITS ──────────────────
 
     def open_settings(self):
         SettingsWindow(self)
+
+    def open_credits(self):
+        CreditsWindow(self)
 
     # ── TRANSCRIPTION ───────────────────────
 
@@ -510,14 +660,24 @@ class DanScribeApp(ctk.CTk):
             messagebox.showerror("Error", "The selected file is empty.")
             return
 
+        # Mode guard (defense in depth). The Accurate button is disabled in the
+        # UI, but never let anything other than Fast start a run — Accurate must
+        # never silently fall back to the Medium engine.
+        mode = self.mode_var.get()
+        if mode != "fast":
+            messagebox.showinfo(
+                "DanScribe AI",
+                "Akkuraat-modus is nog nie beskikbaar nie.\nHierdie funksie kom binnekort."
+            )
+            return
+        model_name = FAST_MODE_MODEL
+
         # Save last used settings
-        self.config_data["last_model"] = self.model_var.get()
         self.config_data["last_language"] = self.lang_var.get()
         save_config(self.config_data)
 
         task_choice = self.task_var.get()
         lang_code = LANG_CODES[self.lang_var.get()]
-        model_name = MODELS[self.model_var.get()]
         whisper_task = "translate" if task_choice == "Translate to English" else "transcribe"
         do_diarize = self.diarize_var.get()
         num_speakers = int(self.num_speakers_var.get())
@@ -552,8 +712,21 @@ class DanScribeApp(ctk.CTk):
                     self.diarized_segments = None
                     transcript_text = result["text"]
 
+                # current_transcript feeds the on-screen preview AND the Claude
+                # summary prompt, so it must stay pure transcript. Provenance is
+                # attached only at the export layer (below), never here.
                 self.current_transcript = transcript_text
-                output_path = self._save_transcript(transcript_text, file_path)
+
+                provenance = build_provenance(
+                    mode="Vinnig (Fast)",
+                    language_label=self.lang_var.get(),
+                    task=whisper_task,
+                    diarized=do_diarize,
+                    num_speakers=num_speakers,
+                )
+                output_path = self._save_transcript(
+                    transcript_text, file_path, provenance=provenance
+                )
 
                 preview = transcript_text[:2000] + ("..." if len(transcript_text) > 2000 else "")
                 self._ui(self.progress_bar.set, 1.0)
@@ -908,8 +1081,13 @@ Write the summary in the same language as the transcription."""
         os.makedirs(path, exist_ok=True)
         return path
 
-    def _make_docx(self, text, docx_path, doc_type="transcript"):
-        """Convert text to a formatted .docx file using python-docx."""
+    def _make_docx(self, text, docx_path, doc_type="transcript", provenance=None):
+        """Convert text to a formatted .docx file using python-docx.
+
+        `provenance`, when given, is rendered as a small gray audit footer at
+        the very bottom (below the transcript body) — additive metadata that
+        records which engine produced the document.
+        """
         from docx import Document
         from docx.shared import Pt, RGBColor, Inches
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -1001,19 +1179,56 @@ Write the summary in the same language as the transcription."""
             r.font.name = "Calibri"
             r.font.size = Pt(11)
 
+        # Provenance footer — small gray audit block at the very bottom.
+        if provenance:
+            doc.add_paragraph()  # spacer
+            sep = doc.add_paragraph()
+            sep_run = sep.add_run("─" * 40)
+            sep_run.font.size = Pt(9)
+            sep_run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+            sep_run.font.name = "Calibri"
+
+            heading = doc.add_paragraph()
+            h_run = heading.add_run("Transcription provenance")
+            h_run.bold = True
+            h_run.font.size = Pt(9)
+            h_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+            h_run.font.name = "Calibri"
+
+            for line in format_provenance_lines(provenance):
+                pp = doc.add_paragraph()
+                pr = pp.add_run(line)
+                pr.font.size = Pt(9)
+                pr.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+                pr.font.name = "Calibri"
+
         doc.save(docx_path)
 
-    def _save_transcript(self, text, source_path):
+    def _save_transcript(self, text, source_path, provenance=None):
         from datetime import datetime
         base = os.path.splitext(os.path.basename(source_path))[0]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = self._get_output_dir()
+
+        # The transcript body is written verbatim; the provenance footer, if
+        # present, is appended AFTER it, clearly separated — additive metadata,
+        # not part of the transcript content itself.
+        txt_body = text
+        if provenance:
+            footer = "\n".join(format_provenance_lines(provenance))
+            txt_body = (
+                text
+                + "\n\n" + ("─" * 40) + "\n"
+                + "Transcription provenance\n"
+                + footer + "\n"
+            )
+
         txt_path = os.path.join(out_dir, f"{base}_transcript_{timestamp}.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(text)
+            f.write(txt_body)
         docx_path = os.path.join(out_dir, f"{base}_transcript_{timestamp}.docx")
         try:
-            self._make_docx(text, docx_path, "transcript")
+            self._make_docx(text, docx_path, "transcript", provenance=provenance)
         except Exception as e:
             logger.warning("Could not create .docx: %s", e)
         return out_dir
