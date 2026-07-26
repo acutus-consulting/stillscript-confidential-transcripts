@@ -49,19 +49,59 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install CPU-only PyTorch
+        # Install torch from the CPU-only index BEFORE requirements.txt, so
+        # openai-whisper's torch dependency is already satisfied and pip does
+        # not pull the multi-GB default (CUDA) wheel into the exe.
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Verify torch is the CPU build
+        # Hard-fail the build if a CUDA wheel ever slips in.
+        run: python -c "import torch,sys; assert '+cu' not in torch.__version__, torch.__version__; print('CPU torch OK:', torch.__version__)"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Fetch static ffmpeg (bundled into the exe)
+        # Download a static Windows ffmpeg build and stage ffmpeg.exe +
+        # ffprobe.exe at the workspace root for --add-binary below. Pinned to
+        # a specific release for reproducibility (gyan.dev — same provider the
+        # old Inno installer used via winget).
+        shell: pwsh
+        run: |
+          $url = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_extracted -Force
+          $bin = Get-ChildItem -Path ffmpeg_extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $bin.FullName -Destination ffmpeg.exe
+          Copy-Item (Join-Path $bin.Directory.FullName "ffprobe.exe") -Destination ffprobe.exe
+          ./ffmpeg.exe -version | Select-Object -First 1
+
       - name: Build executable
+        # --collect-all whisper: bundles the model assets (mel_filters.npz,
+        #   tokenizers) the app loads at transcribe time.
+        # --collect-all librosa/numba/llvmlite: the diarization JIT stack.
+        # --collect-all _soundfile_data (NOT "soundfile"): soundfile is a
+        #   single module, so --collect-all soundfile does NOT grab the native
+        #   libsndfile — it lives in the _soundfile_data package. Verified via
+        #   a Linux onedir dry-run of these exact flags.
         shell: bash
-        run: >
-          pyinstaller --onefile --windowed --name "$EXE_NAME"
-          --add-data "logo.jpg;."
-          --icon "danscribe.ico"
-          DanScribe_v2.py
+        run: |
+          pyinstaller --onefile --windowed --name "$EXE_NAME" \
+            --icon "danscribe.ico" \
+            --add-data "logo.jpg;." \
+            --add-binary "ffmpeg.exe;." \
+            --add-binary "ffprobe.exe;." \
+            --collect-all whisper \
+            --collect-all librosa \
+            --collect-all _soundfile_data \
+            --collect-all numba \
+            --collect-all llvmlite \
+            --collect-submodules sklearn \
+            DanScribe_v2.py
 
       - name: Upload .exe to the GitHub release
         shell: bash
