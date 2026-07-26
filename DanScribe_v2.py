@@ -45,6 +45,33 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+
+def _ensure_bundled_binaries_on_path():
+    """Make ffmpeg/ffprobe bundled inside the frozen exe discoverable.
+
+    The Windows build ships ffmpeg.exe and ffprobe.exe via PyInstaller
+    --add-binary "...;.", which unpacks them into sys._MEIPASS (the onefile
+    bundle root). Every audio call in this app shells out to a *bare*
+    "ffmpeg"/"ffprobe" name — Whisper's own decoder (whisper/audio.py) as
+    well as our diarization helpers (_probe_audio_duration_seconds,
+    _diarize). Those resolve via PATH, so we prepend the bundle dir here.
+
+    Prepend (not append) so the bundled copy wins over any stale system
+    ffmpeg. No-op when running from source (sys._MEIPASS is absent), so the
+    dev/Linux PATH is left exactly as-is.
+    """
+    base_path = getattr(sys, "_MEIPASS", None)
+    if not base_path:
+        return
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    if base_path not in parts:
+        os.environ["PATH"] = base_path + os.pathsep + os.environ.get("PATH", "")
+
+
+# Run at import so ffmpeg is resolvable before any transcription starts,
+# regardless of entry point.
+_ensure_bundled_binaries_on_path()
+
 CONFIG_PATH = os.path.join(Path.home(), ".danscribe_config.json")
 _KEYRING_SERVICE = "DanScribe"
 _KEYRING_USER = "claude_api_key"
