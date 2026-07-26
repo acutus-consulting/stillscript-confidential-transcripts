@@ -142,7 +142,7 @@ FAST_MODE_MODEL = "medium"
 # Phase 3 adds the accurate-mode engine (large-v3 + adapter revision SHA).
 FAST_MODE_ENGINE_LABEL = "DanScribe Fast — Whisper Medium"
 
-# Third-party attribution shown in the "Oor" (Credits) dialog. Phase 3 appends
+# Third-party attribution shown in the "About" (Credits) dialog. Phase 3 appends
 # the fine-tuned Afrikaans model + dataset entry (CC-BY-4.0) — one more dict,
 # no UI change.
 CREDITS = [
@@ -338,15 +338,15 @@ class CreditsWindow(ctk.CTkToplevel):
     """
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("DanScribe AI — Oor / Credits")
+        self.title("DanScribe AI — About / Credits")
         self.geometry("560x420")
         self.resizable(False, False)
         self.grab_set()
 
-        ctk.CTkLabel(self, text="ℹ️ Oor DanScribe AI", font=("Arial", 20, "bold")).pack(pady=(20, 4))
+        ctk.CTkLabel(self, text="ℹ️ About DanScribe AI", font=("Arial", 20, "bold")).pack(pady=(20, 4))
         ctk.CTkLabel(
             self,
-            text="DanScribe is gebou op die volgende oopbron-werk:",
+            text="DanScribe is built on the following open-source work:",
             font=("Arial", 12),
             text_color="gray",
         ).pack(pady=(0, 10))
@@ -366,7 +366,7 @@ class CreditsWindow(ctk.CTkToplevel):
                 anchor="w", justify="left", wraplength=460
             ).pack(fill="x", padx=12, pady=2)
             ctk.CTkLabel(
-                card, text=f"Lisensie: {entry['license']}", font=("Arial", 11), anchor="w"
+                card, text=f"License: {entry['license']}", font=("Arial", 11), anchor="w"
             ).pack(fill="x", padx=12, pady=2)
 
             url = entry.get("url")
@@ -379,7 +379,7 @@ class CreditsWindow(ctk.CTkToplevel):
                 link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
 
         ctk.CTkButton(
-            self, text="Maak toe", command=self.destroy,
+            self, text="Close", command=self.destroy,
             width=160, fg_color="#1f538d"
         ).pack(pady=(6, 16))
 
@@ -510,7 +510,7 @@ class DanScribeApp(ctk.CTk):
 
         # Credits / About button (below Settings)
         credits_btn = ctk.CTkButton(
-            self, text="ℹ️ Oor", command=self.open_credits,
+            self, text="ℹ️ About", command=self.open_credits,
             width=120, height=30, fg_color="gray30"
         )
         credits_btn.place(x=480, y=48)
