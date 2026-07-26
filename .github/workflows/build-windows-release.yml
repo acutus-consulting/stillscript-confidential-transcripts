@@ -52,8 +52,10 @@ jobs:
       - name: Install CPU-only PyTorch
         # Install torch from the CPU-only index BEFORE requirements.txt, so
         # openai-whisper's torch dependency is already satisfied and pip does
-        # not pull the multi-GB default (CUDA) wheel into the exe.
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+        # not pull the multi-GB default (CUDA) wheel into the exe. Pinned to
+        # the exact version confirmed working by the first green v3.1.0 CI
+        # run (2026-07-26) for reproducibility.
+        run: pip install torch==2.13.0+cpu --index-url https://download.pytorch.org/whl/cpu
 
       - name: Verify torch is the CPU build
         # Hard-fail the build if a CUDA wheel ever slips in.
@@ -102,6 +104,25 @@ jobs:
             --collect-all llvmlite \
             --collect-submodules sklearn \
             DanScribe_v2.py
+
+      - name: Ensure a GitHub Release exists for this tag
+        # `gh release upload` requires a Release object, not just a tag — a
+        # pushed tag alone (the normal trigger for this workflow) does not
+        # create one, which is why the first v3.1.0 run built the exe fine
+        # but failed at upload with "release not found". Create a draft
+        # release if one doesn't exist yet; leave it alone if it does (so
+        # re-running this workflow for an already-published tag is a no-op
+        # here). Draft, not public — these are in-house/friends-and-family
+        # beta builds, not public announcements.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.value }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "$TAG" \
+              --notes "Automated build for $TAG."
+          fi
 
       - name: Upload .exe to the GitHub release
         shell: bash

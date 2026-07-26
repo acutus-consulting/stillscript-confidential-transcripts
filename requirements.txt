@@ -3,10 +3,17 @@
 #
 # Versions are pinned to a known-working set (the versions the app is
 # developed and tested against) so CI builds are reproducible. NOTE: torch is
-# intentionally NOT listed here — it is installed separately from the CPU-only
-# PyTorch index (see the CI workflow and install_linux.sh) to avoid pulling the
-# multi-GB CUDA build. Pin torch there once a green build confirms the exact
-# CPU wheel version the index resolves.
+# intentionally NOT listed here — a plain "torch==X.Y.Z" line here would
+# still resolve against PyPI's default index (the CUDA build) unless every
+# other package in this file also pointed at the CPU index, since --index-url
+# in a requirements.txt is a global option for the whole file, not scoped to
+# one line. Instead torch is installed from the CPU-only index as its own
+# step, pinned there directly: `pip install torch==2.13.0+cpu --index-url
+# https://download.pytorch.org/whl/cpu` (see the CI workflow's "Install
+# CPU-only PyTorch" step; install_linux.sh does the CPU-index install
+# unpinned — bump it to match if reproducibility matters there too).
+# torch==2.13.0+cpu is the version confirmed working by the first green
+# v3.1.0 Windows CI build (2026-07-26).
 
 # Core UI + imaging
 customtkinter==5.2.2
