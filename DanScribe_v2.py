@@ -543,14 +543,14 @@ class DanScribeApp(ctk.CTk):
         mode_frame.pack(pady=2)
 
         self.fast_btn = ctk.CTkButton(
-            mode_frame, text="⚡ Vinnig (Fast)",
+            mode_frame, text="⚡ Fast (Vinnig)",
             command=self._select_fast_mode,
             width=185, height=40, fg_color="#1f538d", font=("Arial", 13, "bold")
         )
         self.fast_btn.grid(row=0, column=0, padx=(0, 8))
 
         self.accurate_btn = ctk.CTkButton(
-            mode_frame, text="🎯 Akkuraat (Accurate)",
+            mode_frame, text="🎯 Accurate (Akkuraat)",
             width=185, height=40, fg_color="gray30",
             state="disabled"
         )
@@ -561,7 +561,7 @@ class DanScribeApp(ctk.CTk):
         caption.pack(pady=(0, 4))
         ctk.CTkLabel(caption, text="", width=185).grid(row=0, column=0, padx=(0, 8))
         ctk.CTkLabel(
-            caption, text="Kom binnekort", width=185,
+            caption, text="Coming soon", width=185,
             font=("Arial", 10), text_color="gray"
         ).grid(row=0, column=1)
 
@@ -667,7 +667,7 @@ class DanScribeApp(ctk.CTk):
         if mode != "fast":
             messagebox.showinfo(
                 "DanScribe AI",
-                "Akkuraat-modus is nog nie beskikbaar nie.\nHierdie funksie kom binnekort."
+                "Accurate mode is not yet available.\nThis feature is coming soon."
             )
             return
         model_name = FAST_MODE_MODEL
@@ -718,7 +718,7 @@ class DanScribeApp(ctk.CTk):
                 self.current_transcript = transcript_text
 
                 provenance = build_provenance(
-                    mode="Vinnig (Fast)",
+                    mode="Fast (Vinnig)",
                     language_label=self.lang_var.get(),
                     task=whisper_task,
                     diarized=do_diarize,
