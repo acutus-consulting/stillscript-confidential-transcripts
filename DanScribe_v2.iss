@@ -1,5 +1,5 @@
 #define MyAppName "DanScribe AI"
-#define MyAppVersion "3.0.1"
+#define MyAppVersion "3.1.0"
 #define MyAppPublisher "DanScribe"
 #define MyAppExeName "DanScribe_v3.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={autopf}\DanScribe AI
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=C:\Users\danie\Danscribe\installer_output
-OutputBaseFilename=DanScribe_AI_Setup_v3.0.1
+OutputBaseFilename=DanScribe_AI_Setup_v3.1.0
 SetupIconFile=C:\Users\danie\Danscribe\danscribe.ico
 Compression=lzma
 SolidCompression=yes

@@ -463,7 +463,7 @@ class NameAssignWindow(ctk.CTkToplevel):
 class DanScribeApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("DanScribe AI — Professional v3.0.1")
+        self.title("DanScribe AI — Professional v3.1.0")
         self.geometry("620x920")
         self.resizable(False, False)
 

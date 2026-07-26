@@ -1,8 +1,16 @@
-# DanScribe AI — Professional Edition v3.0.1
+# DanScribe AI — Professional Edition v3.1.0
 
 **DanScribe AI** is a desktop transcription tool powered by OpenAI's Whisper engine. Built in South Africa, for South Africans. It converts audio recordings into text across all 11 official South African languages, with speaker identification and AI-powered meeting summaries via Claude.
 
 ---
+
+## What's New in v3.1.0
+
+- **Two transcription modes** — the model picker is replaced by a **Fast (Vinnig)** / **Accurate (Akkuraat)** mode selector. Fast (the default) runs the Whisper Medium engine with the improved Afrikaans prompt. Accurate is present but not yet enabled (coming in a later release).
+- **Transcript provenance** — every `.txt` and `.docx` now carries an audit footer recording which engine produced it (model + version, mode, language setting, task, and timestamp) — useful for professional and legal record-keeping.
+- **Credits / About surface** — a new About dialog attributing the open-source work DanScribe builds on (OpenAI Whisper).
+- **Lower memory on long recordings** — speaker identification on long files (20 min+) now streams audio from a temporary file instead of loading the whole recording into RAM, cutting peak memory on multi-hour recordings from gigabytes to roughly constant. Short files are unchanged.
+- **Self-contained Windows build** — the Windows `.exe` now bundles ffmpeg, so there is no separate install step; CI produces a CPU-only build with all model/library assets included.
 
 ## What's New in v3.0.1
 
@@ -42,7 +50,7 @@
 
 - Transcribe audio in the original language or translate directly to English
 - Supports all 11 official South African languages
-- Three AI model sizes: Base (fast), Small (accurate), Medium (professional)
+- Two transcription modes: Fast (Vinnig) — Whisper Medium — with Accurate (Akkuraat) coming in a later release
 - Speaker identification with configurable number of expected speakers
 - AI-powered meeting summaries (requires Claude API key)
 - Output saved automatically as `.txt` and `.docx` to your Downloads folder
@@ -91,15 +99,17 @@ python DanScribe_v2.py
 
 ## Building the EXE
 
-```bash
-pyinstaller --onefile --windowed --name "DanScribe_v3" --add-data "logo.jpg;." --icon "danscribe.ico" DanScribe_v2.py
-```
+Windows builds are produced automatically by CI — see
+`.github/workflows/build-windows-release.yml` (PyInstaller cannot
+cross-compile, so the build runs on a Windows runner). It installs CPU-only
+PyTorch, bundles a static ffmpeg, collects the Whisper/librosa assets, builds
+a self-contained one-file exe, and attaches `DanScribe_v3.exe` to the matching
+GitHub release. It runs on every pushed `vX.Y.Z` tag.
 
-The compiled executable will be in the `dist/` folder as `DanScribe_v3.exe`.
-
-Windows builds are also produced automatically by CI — see
-`.github/workflows/build-windows-release.yml`. It runs on every pushed
-`vX.Y.Z` tag and attaches `DanScribe_v3.exe` to the matching GitHub release.
+To build locally on a Windows machine, mirror that workflow's `pyinstaller`
+invocation (CPU torch + static ffmpeg staged alongside, then the
+`--collect-all`/`--add-binary` flags). The compiled executable lands in
+`dist/` as `DanScribe_v3.exe`.
 
 ## Claude API Key
 
