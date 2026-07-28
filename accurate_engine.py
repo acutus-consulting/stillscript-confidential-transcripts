@@ -1,0 +1,294 @@
+"""Accurate-mode transcription engine — Whisper large-v3 + Afrikaans adapter.
+
+This is the engine behind "Akkuraat" (Accurate) mode. It is deliberately kept
+in its own module, separate from the Fast (Whisper Medium) path in
+DanScribe_v2.py, so the two engines cannot interfere with one another.
+
+═══════════════════════════════════════════════════════════════════════════
+ CRITICAL — DO NOT ROUTE THIS MODEL THROUGH CTranslate2 / faster-whisper
+═══════════════════════════════════════════════════════════════════════════
+Transcription here goes through HuggingFace `transformers` and a direct
+`model.generate()` call, and nothing else.
+
+The CT2 / faster-whisper conversion of this specific merged large-v3-Afrikaans
+model is KNOWN BROKEN: it forces the language incorrectly and fabricates
+fluent *English* text from Afrikaans audio — a silent, plausible-looking
+wrong answer, which is the worst possible failure mode for a legal/clinical
+transcript. The converted artefacts still exist on disk
+(`~/whisper_afrikaans_spike/ct2_afrikaans_int8/`) but must not be used. Do not
+"optimise" this module onto that path even though int8/CT2 looks faster.
+
+═══════════════════════════════════════════════════════════════════════════
+ Decode configuration (verified in Wave 0.5 on real multi-speaker Afrikaans)
+═══════════════════════════════════════════════════════════════════════════
+- Direct `generate()`, NOT `pipeline(chunk_length_s=...)`. The chunked
+  pipeline hallucinated on long-form Afrikaans; the sequential, timestamp-
+  driven long-form algorithm inside `generate()` is what was validated.
+- `condition_on_prev_tokens=True` — measurably better than False on the
+  Toets3 benchmark (fixed "onkoste"→"onkors" 4/4, and Eskom consistency),
+  at ~22% slower. Two small non-spiralling stutters were observed; they are
+  logged on the masterplan waitlist, not a blocker.
+- Audio is fed whole (`truncation=False`, `return_attention_mask=True`) so
+  `generate()` runs its own long-form windowing with the anti-hallucination
+  heuristics (compression-ratio / logprob / no-speech thresholds + a
+  temperature fallback ladder).
+
+Expect roughly 3x real time on CPU: this is a batch / leave-it-running job,
+not an interactive one.
+
+Before the model is used for anything, load_engine() runs the adapter guard in
+accurate_guard.py (masterplan 2.2), which proves the weights on disk really are
+the fine-tuned Afrikaans merge and not stock large-v3 or a corrupt copy. It
+costs ~1s, once per session. A guard failure raises AccurateModelGuardError and
+must be allowed to propagate — never fall back to another engine.
+
+Heavy dependencies (`torch`, `transformers`) are imported lazily *inside*
+the functions below, never at module import time. Fast mode's runtime does
+not ship `transformers`, and merely importing this module must never be able
+to break the Fast path.
+"""
+
+import os
+import logging
+from pathlib import Path
+
+logger = logging.getLogger("danscribe.accurate")
+
+# ─────────────────────────────────────────────
+#  MODEL LOCATION
+# ─────────────────────────────────────────────
+# The merged fp32 model produced by the spike's verify_and_merge.py (base
+# large-v3 + André Oosthuizen's Afrikaans LoRA, merged via merge_and_unload).
+# It is a standard HuggingFace model *directory* — from_pretrained() takes the
+# directory, not a single weights file.
+#
+# Override with the STILLSCRIPT_ACCURATE_MODEL_DIR environment variable, e.g.
+# once the model ships somewhere other than the spike directory.
+_DEFAULT_MODEL_DIR = str(Path.home() / "whisper_afrikaans_spike" / "merged_afrikaans_fp32")
+MODEL_DIR_ENV_VAR = "STILLSCRIPT_ACCURATE_MODEL_DIR"
+
+# Files from_pretrained() needs before it will load anything.
+_REQUIRED_MODEL_FILES = ("config.json", "model.safetensors", "preprocessor_config.json")
+
+# Human-readable engine name. The provenance block currently records the Fast
+# label only; wiring this in (with the adapter revision SHA) is masterplan
+# item 2.6, deliberately not done here.
+ACCURATE_ENGINE_LABEL = "StillScript Accurate — Whisper large-v3 + Afrikaans adapter"
+
+# This engine is fine-tuned for Afrikaans. If a caller does not specify a
+# language we use "af" rather than letting Whisper auto-detect, because
+# auto-detect is the path that was never validated for this merge.
+DEFAULT_LANGUAGE = "af"
+
+# Verified Wave 0.5 decode settings.
+CONDITION_ON_PREV_TOKENS = True
+COMPRESSION_RATIO_THRESHOLD = 2.4
+LOGPROB_THRESHOLD = -1.0
+NO_SPEECH_THRESHOLD = 0.6
+
+# Whisper's temperature fallback ladder: retry low-confidence segments at
+# progressively higher temperatures. This is the configuration Wave 0.5 was
+# verified with, so it is the default here.
+#
+# NOTE for masterplan item 2.9 (reproducibility choice): "Best effort" is this
+# ladder; "Consistent" is plain 0.0 (deterministic, no sampling). That item
+# only needs to pass a different `temperature=` value into transcribe() — no
+# restructuring of this module required.
+TEMPERATURE_BEST_EFFORT = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+TEMPERATURE_CONSISTENT = 0.0
+
+SAMPLE_RATE = 16000
+
+# Cache keyed by resolved model directory, so a second transcription in the
+# same session does not re-read 6 GB from disk.
+# (Evicting this before/after a run — to keep Medium and large-v3 from being
+# resident at the same time — is masterplan item 2.5, intentionally not here.)
+_engine_cache = {}
+
+
+# The Accurate-mode error hierarchy lives in accurate_guard so that the UI can
+# import and handle these without pulling in torch/transformers. Re-exported
+# here because this module is the public entry point for Accurate mode.
+#   AccurateEngineUnavailable  — Accurate mode cannot run on this machine
+#   AccurateModelGuardError    — ...specifically because the model is wrong
+from accurate_guard import (  # noqa: F401  (re-export)
+    AccurateEngineUnavailable,
+    AccurateModelGuardError,
+    verify_merged_model,
+)
+
+
+def resolve_model_dir(model_dir=None):
+    """Return the directory the accurate model should be loaded from.
+
+    Explicit argument wins, then the environment variable, then the default
+    spike location.
+    """
+    return model_dir or os.environ.get(MODEL_DIR_ENV_VAR) or _DEFAULT_MODEL_DIR
+
+
+def check_model_available(model_dir=None):
+    """Return (ok, detail) describing whether the model directory looks usable.
+
+    Cheap filesystem check only — it does not load the model. Useful for a
+    pre-flight check before committing the user to a multi-hour run.
+    """
+    resolved = resolve_model_dir(model_dir)
+    if not os.path.isdir(resolved):
+        return False, f"Model directory not found: {resolved}"
+    missing = [f for f in _REQUIRED_MODEL_FILES if not os.path.isfile(os.path.join(resolved, f))]
+    if missing:
+        return False, f"Model directory {resolved} is missing: {', '.join(missing)}"
+    return True, resolved
+
+
+def load_engine(model_dir=None):
+    """Load (and cache) the processor + model. Returns (processor, model, dir).
+
+    Raises AccurateEngineUnavailable if the dependencies or the model files
+    are not present, rather than falling back to anything else.
+    """
+    resolved = resolve_model_dir(model_dir)
+    if resolved in _engine_cache:
+        return (*_engine_cache[resolved], resolved)
+
+    ok, detail = check_model_available(resolved)
+    if not ok:
+        raise AccurateEngineUnavailable(detail)
+
+    # Adapter guard (masterplan 2.2) — prove this really is the fine-tuned
+    # Afrikaans merge before we transcribe a word with it. Deliberately placed
+    # BEFORE from_pretrained(): it reads ~40 MB of probe tensors straight from
+    # the safetensors file, so a wrong or corrupt model fails in about a second
+    # rather than after a 6.2 GB load. It runs once per model directory, on the
+    # cache-miss path only, so it costs nothing per transcription.
+    #
+    # AccurateModelGuardError is allowed to propagate. Do NOT catch it and fall
+    # back to another engine — the entire point is that a wrong model must stop
+    # the run rather than quietly produce a plausible transcript.
+    guard_report = verify_merged_model(resolved)
+    logger.info("Accurate model guard: %s", guard_report)
+
+    # Lazy imports: keep `transformers`/`torch` out of the Fast-mode runtime.
+    try:
+        import torch  # noqa: F401  (needed for dtype below)
+        from transformers import WhisperProcessor, WhisperForConditionalGeneration
+    except ImportError as e:
+        raise AccurateEngineUnavailable(
+            f"Accurate mode needs the 'transformers' and 'torch' packages: {e}"
+        ) from e
+
+    logger.info("Loading accurate-mode model from %s", resolved)
+    processor = WhisperProcessor.from_pretrained(resolved)
+    model = WhisperForConditionalGeneration.from_pretrained(resolved, dtype=torch.float32)
+    model.eval()
+
+    _engine_cache[resolved] = (processor, model)
+    return processor, model, resolved
+
+
+def transcribe(
+    path,
+    *,
+    language=DEFAULT_LANGUAGE,
+    task="transcribe",
+    model_dir=None,
+    temperature=TEMPERATURE_BEST_EFFORT,
+    condition_on_prev_tokens=CONDITION_ON_PREV_TOKENS,
+    progress_callback=None,
+):
+    """Transcribe `path` with the large-v3 Afrikaans engine.
+
+    Returns the same shape the Fast seam returns, so everything downstream
+    (diarization, transcript rendering, provenance) keeps working unchanged:
+
+        {"text": str,
+         "segments": [{"start": float, "end": float, "text": str}, ...],
+         "language": str,
+         "engine": str}
+
+    `progress_callback` is optional and receives the raw progress tensor from
+    transformers; the time-warning / progress UI itself is masterplan 2.4.
+    """
+    import torch
+    import librosa
+
+    processor, model, resolved = load_engine(model_dir)
+
+    if language is None:
+        # Don't quietly auto-detect on an Afrikaans-specialised merge.
+        logger.info("No language given for accurate mode; defaulting to '%s'.", DEFAULT_LANGUAGE)
+        language = DEFAULT_LANGUAGE
+
+    audio, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
+    duration = len(audio) / SAMPLE_RATE
+    logger.info(
+        "Accurate transcription starting: %s (%.1fs audio, language=%s, task=%s, "
+        "condition_on_prev_tokens=%s)",
+        path, duration, language, task, condition_on_prev_tokens,
+    )
+
+    # truncation=False + attention mask => generate() takes the long-form
+    # sequential path with its own windowing and fallback heuristics.
+    inputs = processor(
+        audio,
+        sampling_rate=SAMPLE_RATE,
+        return_tensors="pt",
+        truncation=False,
+        padding="longest",
+        return_attention_mask=True,
+    )
+
+    generate_kwargs = dict(
+        return_timestamps=True,     # required for >30s audio
+        return_segments=True,       # gives per-segment start/end for diarization
+        language=language,
+        task=task,
+        condition_on_prev_tokens=condition_on_prev_tokens,
+        compression_ratio_threshold=COMPRESSION_RATIO_THRESHOLD,
+        logprob_threshold=LOGPROB_THRESHOLD,
+        no_speech_threshold=NO_SPEECH_THRESHOLD,
+        temperature=temperature,
+    )
+    if progress_callback is not None:
+        generate_kwargs["monitor_progress"] = progress_callback
+
+    with torch.no_grad():
+        output = model.generate(**inputs, **generate_kwargs)
+
+    return _build_result(processor, output, language, duration)
+
+
+def _build_result(processor, output, language, duration):
+    """Normalise generate()'s output into the Fast seam's result shape."""
+    # With return_segments=True, generate() returns a dict:
+    #   {"sequences": tensor, "segments": [[seg, seg, ...]]}   (outer list = batch)
+    sequences = output["sequences"] if isinstance(output, dict) else output
+    text = processor.batch_decode(sequences, skip_special_tokens=True)[0]
+
+    segments = []
+    if isinstance(output, dict) and output.get("segments"):
+        for seg in output["segments"][0]:
+            seg_text = processor.decode(seg["tokens"], skip_special_tokens=True).strip()
+            if not seg_text:
+                continue
+            segments.append({
+                "start": float(seg["start"]),
+                "end": float(seg["end"]),
+                "text": seg_text,
+            })
+
+    if not segments:
+        # Never hand downstream an empty segment list for non-empty audio —
+        # diarization would silently produce a single-speaker transcript.
+        # One whole-file segment is honest about what we actually know.
+        logger.warning("Accurate engine returned no timestamped segments; "
+                       "falling back to a single whole-file segment.")
+        segments = [{"start": 0.0, "end": duration, "text": text.strip()}]
+
+    return {
+        "text": text,
+        "segments": segments,
+        "language": language,
+        "engine": ACCURATE_ENGINE_LABEL,
+    }

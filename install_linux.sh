@@ -59,6 +59,7 @@ mkdir -p "$DESKTOP_DIR"
 # ── Stap 5: Kopieer app-lêers ──
 echo "► Copying application files..."
 cp "$SCRIPT_DIR/DanScribe_v2.py" "$APP_DIR/DanScribe_v2.py"
+cp "$SCRIPT_DIR/accurate_engine.py" "$APP_DIR/accurate_engine.py"
 cp "$SCRIPT_DIR/requirements.txt" "$APP_DIR/requirements.txt"
 
 # Kopieer logo as dit bestaan

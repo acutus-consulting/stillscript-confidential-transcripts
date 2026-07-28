@@ -231,6 +231,33 @@ def transcribe_audio(path, *, language, task, model_name):
     return result
 
 
+def transcribe_audio_accurate(path, *, language, task, model_dir=None, **engine_kwargs):
+    """Accurate-mode counterpart to transcribe_audio() — the second entry point.
+
+    Runs Whisper large-v3 + the Afrikaans adapter through a direct
+    transformers `generate()` call (see accurate_engine.py; the CT2 /
+    faster-whisper path for that model is known broken and must never be
+    used). Returns the same {"text", "segments", ...} shape as the Fast seam,
+    so diarization and the exporters are unaffected by which engine ran.
+
+    Two things this deliberately does NOT do:
+      * it is not wired into run() — activating the Accurate button is
+        masterplan item 2.3;
+      * it never falls back to Fast/Medium. If the engine is unavailable the
+        AccurateEngineUnavailable error propagates, because silently
+        substituting a weaker model is exactly the failure this product
+        cannot ship.
+
+    accurate_engine is imported lazily so that its heavy dependencies
+    (torch/transformers, absent from the Fast-mode runtime) can never break
+    startup or the Fast path.
+    """
+    import accurate_engine
+    return accurate_engine.transcribe(
+        path, language=language, task=task, model_dir=model_dir, **engine_kwargs
+    )
+
+
 def build_provenance(*, mode, language_label, task, diarized, num_speakers=None):
     """Describe which engine produced a transcript, for the audit footer.
 
