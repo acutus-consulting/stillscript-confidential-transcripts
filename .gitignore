@@ -15,6 +15,10 @@ build/
 dist/
 *.spec
 
+# Built executables. DanScribe_v3.exe is ~330 MB and was sitting untracked next
+# to the source; one `git add -A` would have committed it permanently.
+*.exe
+
 # OS cruft
 .DS_Store
 Thumbs.db
