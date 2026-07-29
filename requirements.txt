@@ -37,6 +37,26 @@ keyring==24.3.1
 librosa==0.11.0
 scikit-learn==1.9.0
 
+# scipy pinned explicitly — it was the invisible constraint behind the whole
+# numpy drift. librosa and scikit-learn both depend on it, but nothing pinned it,
+# so pip was free to pick a scipy whose own numpy floor silently dictated ours.
+#
+# 1.17.0 is the HIGHEST scipy that satisfies every constraint at once:
+#   * numpy<2.7,>=1.26.4  -> accepts our numpy 2.4.6
+#   * requires_python >=3.11, and ships a cp311 Windows wheel
+#
+# That last point is the binding one and is easy to miss: the CI build runs on
+# Python 3.11 (.github/workflows/build-windows-release.yml), and scipy 1.18 —
+# which is what a fresh `pip install` resolves to, and what was sitting in the
+# dev venv — requires Python >=3.12 and publishes NO cp311 wheel. Pinning the
+# installed 1.18.0 would have broken the Windows build while passing every test
+# on this 3.12 machine.
+#
+# Upper bound to respect when bumping: numba 0.66.0 caps numpy at <2.5, so do not
+# adopt a scipy that requires numpy>=2.5. Bump scipy and numpy together, and
+# check the cp311 wheel exists unless CI has moved to a newer Python by then.
+scipy==1.17.0
+
 # numpy 2.x ON PURPOSE — this moved from 1.26.4, do not revert it casually.
 #
 # The 1.26.4 pin was never actually exercised: the venv every Accurate-mode wave
