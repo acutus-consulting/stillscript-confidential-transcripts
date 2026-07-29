@@ -36,14 +36,48 @@ keyring==24.3.1
 # If these are absent the app falls back to pause-based speaker detection.
 librosa==0.11.0
 scikit-learn==1.9.0
-numpy==1.26.4
+
+# numpy 2.x ON PURPOSE — this moved from 1.26.4, do not revert it casually.
+#
+# The 1.26.4 pin was never actually exercised: the venv every Accurate-mode wave
+# was built and tested in was assembled ad-hoc for the spike, not from this file,
+# and pip resolved numpy/numba/llvmlite/soundfile to latest. So the four pins
+# below and the tested reality had silently diverged across a numpy MAJOR version.
+# Reconciled deliberately in favour of the tested set, after checking:
+#
+#   * numba 0.66.0 declares numpy<2.5,>=1.22 and llvmlite<0.49,>=0.48.0dev0, so
+#     2.4.6 + llvmlite 0.48.0 is inside its supported window. (The old pair,
+#     numba 0.64.0 + llvmlite 0.46.0, was internally consistent too — it was not
+#     broken, just untested.)
+#   * scipy is the constraint that actually forces the issue: scipy 1.18 requires
+#     numpy>=2.0.0. Holding numpy at 1.26.4 silently pins scipy back to <=1.17
+#     forever. scipy is NOT pinned in this file, which is how that stayed hidden.
+#   * soundfile only declares `numpy` unpinned — it is a thin CFFI wrapper and is
+#     not numpy-major sensitive.
+#   * openai-whisper, librosa, scikit-learn and torch 2.13.0+cpu all declare no
+#     numpy upper bound and run fine on 2.4.6 (torch<->numpy interop verified).
+#   * The codebase uses none of numpy 2.0's removed aliases (np.float_, np.NaN,
+#     np.in1d, ...), no `copy=False`, and no removed methods (.ptp/.itemset).
+#   * The guard's hash path is byte-identical under 1.26.4 and 2.4.6 — verified
+#     by running its exact tobytes()/memoryview cast on fixed float32 patterns
+#     under both. accurate_fingerprint.py is therefore NOT numpy-version-bound
+#     and does not need re-pinning.
+#
+# CAVEAT worth carrying: Fast mode's diarization was only ever validated on
+# numpy 1.x (the shipped v3.1.0 CI build used the old pin). Nothing in its numpy
+# usage is 2.x-sensitive — it is float(np.mean(...))/np.std/np.mean(axis=1) — but
+# "no breaking pattern found" is not the same as "smoke-tested". Do that before
+# release (6.1).
+numpy==2.4.6
 
 # Transitive deps of the above, pinned explicitly so the whole set is locked:
 #   soundfile      — per-segment audio seek in the diarization path (via librosa)
-#   numba/llvmlite — librosa's JIT stack (must be collected when frozen)
-soundfile==0.13.1
-numba==0.64.0
-llvmlite==0.46.0
+#   numba/llvmlite — librosa's JIT stack (must be collected when frozen).
+#                    These two are tightly coupled: numba 0.66.0 requires
+#                    llvmlite>=0.48.0dev0,<0.49. Bump them together or not at all.
+soundfile==0.14.0
+numba==0.66.0
+llvmlite==0.48.0
 
 # ── Accurate mode (Waves 2.1 / 2.2 / 2.1a.2 / 2.1a.3) ────────────────────────
 # Whisper large-v3 + the Afrikaans adapter, run through transformers.generate().
