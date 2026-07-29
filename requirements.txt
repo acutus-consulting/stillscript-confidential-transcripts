@@ -44,3 +44,58 @@ numpy==1.26.4
 soundfile==0.13.1
 numba==0.64.0
 llvmlite==0.46.0
+
+# ── Accurate mode (Waves 2.1 / 2.2 / 2.1a.2 / 2.1a.3) ────────────────────────
+# Whisper large-v3 + the Afrikaans adapter, run through transformers.generate().
+# torch is deliberately NOT listed, same reasoning as the note at the top of this
+# file: openai-whisper already requires it, and it is installed from the CPU-only
+# index as its own CI step.
+transformers==5.14.1
+safetensors==0.8.0
+
+# huggingface_hub is pinned to 1.24.0 ON PURPOSE — do not casually bump it.
+#
+# This is the version every Accurate-mode behaviour in this repo was built,
+# debugged and verified against (135/135 tests, plus real end-to-end network
+# runs of the Xet fallback and the kill-and-resume path). A throwaway size
+# investigation happened to install 1.25.1 and pinned that incidentally; the
+# 1.24.0 -> 1.25.1 range was reviewed commit by commit before choosing:
+#
+#   * HF_HUB_DISABLE_XET is STILL snapshotted into a module constant at import
+#     time. accurate_model_download._xet_disabled() sets the module attribute
+#     rather than just the env var precisely because of that, and the workaround
+#     stays necessary. Nothing in the range fixes or changes it.
+#   * The `<etag>.<uuid>.incomplete` file is still unlinked in a `finally`, so
+#     resume is still per-file and never per-byte — the measurement the whole
+#     chunked layout (2.1a.3) is built on still holds.
+#   * xet_get() and the Xet progress reporting are untouched in the range.
+#   * 1.25.0 swaps thread_map -> hf_thread_map in snapshot_download and
+#     preupload_lfs_files, which changes how our custom tqdm_class is
+#     instantiated. Verified our hook works under both shapes, so this is not a
+#     blocker for a future bump — but it is a real change at a seam we depend on,
+#     and it fixes a progress-ordering problem we do not have.
+#   * 1.25.1 over 1.25.0 is a Jobs/Sandbox token change only. Not a path we use.
+#
+# Nothing in the range fixes a problem this app has, so the tested version wins.
+# When bumping: re-run test_accurate_model_download.py in full (it exercises the
+# Xet fallback and resume against the real Hub, not mocks).
+huggingface_hub==1.24.0
+
+# Transitive deps of the above, pinned explicitly for the same reproducibility
+# reason as the soundfile/numba/llvmlite block. hf-xet is what makes the Xet
+# transfer path active at all — with it absent, huggingface_hub silently falls
+# back to plain HTTPS and the fallback logic in accurate_model_download never
+# fires. Keep it pinned so the tested path is the shipped path.
+tokenizers==0.22.2
+hf-xet==1.5.2
+
+# huggingface_hub drags in its own CLI stack (typer/rich/click/pygments/...)
+# even though the app never invokes that CLI — ~9 MiB compressed, measured via a
+# real pip install, and not accounted for in the original 2.1a size estimate.
+# Pinned for reproducibility; a candidate for PyInstaller exclusion in 2.1a.1.
+PyYAML==6.0.3
+click==8.4.2
+typer==0.27.0
+rich==15.0.0
+pygments==2.20.0
+markdown-it-py==4.2.0
