@@ -179,12 +179,57 @@ def load_engine(model_dir=None):
         ) from e
 
     logger.info("Loading accurate-mode model from %s", resolved)
-    processor = WhisperProcessor.from_pretrained(resolved)
-    model = WhisperForConditionalGeneration.from_pretrained(resolved, dtype=torch.float32)
+    try:
+        processor = WhisperProcessor.from_pretrained(resolved)
+        model = WhisperForConditionalGeneration.from_pretrained(resolved, dtype=torch.float32)
+    except (MemoryError, RuntimeError) as e:
+        # Masterplan 2.5: Fast mode's model is released before this call, but
+        # that only removes ~1.5 GB of headroom pressure — it does not
+        # guarantee large-v3's own ~8.7 GB peak fits on a memory-constrained
+        # machine. Nothing is left half-loaded here: _engine_cache is only
+        # written after BOTH from_pretrained() calls succeed (below), so a
+        # failure on either one leaves it exactly as it was.
+        if _looks_like_out_of_memory(e):
+            raise AccurateEngineUnavailable(
+                "Accurate mode needs roughly 8-9 GB of free memory to load its "
+                "language model, and this computer does not have enough "
+                "available right now. Close other programs to free up memory "
+                "and try again, or use Fast mode instead — it uses a much "
+                "smaller model and is unaffected by this."
+            ) from e
+        # A RuntimeError that isn't shaped like OOM (a corrupt file, a
+        # transformers/safetensors internal error, ...) is a different problem
+        # with a different fix; let its own message through rather than
+        # relabelling it as a memory issue it may not be.
+        raise
     model.eval()
 
     _engine_cache[resolved] = (processor, model)
     return processor, model, resolved
+
+
+def _looks_like_out_of_memory(exc):
+    """Distinguish a real allocator-refused-to-allocate failure from any other
+    RuntimeError from_pretrained() might raise (a corrupt file, a
+    transformers-internal error, ...), so only the former gets rewritten into
+    the plain-language message above — everything else keeps its own,
+    unmodified message.
+
+    MemoryError is Python's own signal for this. The RuntimeError text is
+    matched against torch's actual CPU allocator failure, confirmed against a
+    real allocation-refused error on this machine
+    ("[enforce fail at alloc_cpu.cpp:...] ... DefaultCPUAllocator: can't
+    allocate memory: ..."), plus the CUDA equivalent and the generic phrase
+    PyTorch uses for both, in case a future build runs on a GPU machine.
+    """
+    if isinstance(exc, MemoryError):
+        return True
+    text = str(exc)
+    return (
+        "DefaultCPUAllocator" in text
+        or "CUDA out of memory" in text
+        or "out of memory" in text.lower()
+    )
 
 
 def transcribe(

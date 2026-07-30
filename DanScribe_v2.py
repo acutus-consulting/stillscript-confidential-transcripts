@@ -191,6 +191,43 @@ def get_model(model_name):
     return _model_cache[model_name]
 
 
+def release_fast_mode_model():
+    """Evict Fast mode's cached Whisper model(s) from memory (masterplan 2.5).
+
+    Called before Accurate mode loads large-v3. Medium alone sits at roughly
+    1.5 GB resident; large-v3 peaks at ~8.7 GB while generating. Having both
+    resident at once is exactly the scenario that risks OOM on ordinary
+    hardware, and it is avoidable — Fast and Accurate are never used in the
+    same instant, only the same session.
+
+    Clearing the dict (not just deleting individual entries) is what actually
+    matters here: _model_cache is the ONLY thing holding a reference to the
+    loaded `whisper.Whisper` object, so once every entry is gone CPython's
+    refcounting frees the underlying C-allocated tensors immediately — no
+    lingering reference elsewhere in this module keeps it alive (get_model()
+    returns the object to its caller, but callers do not stash it; they call
+    get_model() again next time). The explicit gc.collect() following it
+    exists for the same reason PyTorch's own docs recommend it after freeing
+    large tensors: reference cycles (e.g. autograd graph fragments, even
+    though this app never calls backward()) can otherwise sit uncollected for
+    a while under CPython's generational GC, and this is exactly the moment a
+    plausibly multi-GB allocation is about to follow it.
+
+    A no-op, not an error, if nothing is loaded yet — Accurate mode used first
+    in a fresh session has nothing to release. Switching back to Fast mode
+    afterward is unaffected by this: get_model() simply reloads from disk on
+    its next call, the same cache-miss path it already always had.
+    """
+    if not _model_cache:
+        return
+    released = list(_model_cache.keys())
+    _model_cache.clear()
+    import gc
+    gc.collect()
+    logger.info("Released Fast-mode model(s) from memory before loading "
+               "Accurate mode: %s", released)
+
+
 def transcribe_audio(path, *, language, task, model_name):
     """Run Whisper on `path` and return its result dict ({"text", "segments", ...}).
 
@@ -251,7 +288,15 @@ def transcribe_audio_accurate(path, *, language, task, model_dir=None, **engine_
     accurate_engine is imported lazily so that its heavy dependencies
     (torch/transformers, absent from the Fast-mode runtime) can never break
     startup or the Fast path.
+
+    release_fast_mode_model() runs first (masterplan 2.5) — before large-v3's
+    from_pretrained() call, not before this whole function, so a download that
+    accurate_engine.load_engine() needs to wait on never costs Fast mode its
+    warm cache for nothing. If this raises (e.g. loading large-v3 hits real
+    memory pressure), Fast mode's cache is already empty either way; the next
+    Fast-mode run just reloads Medium from disk, same as first launch.
     """
+    release_fast_mode_model()
     import accurate_engine
     return accurate_engine.transcribe(
         path, language=language, task=task, model_dir=model_dir, **engine_kwargs
