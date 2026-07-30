@@ -258,7 +258,7 @@ def transcribe_audio_accurate(path, *, language, task, model_dir=None, **engine_
     )
 
 
-def build_provenance(*, mode, language_label, task, diarized, num_speakers=None):
+def build_provenance(*, mode, language_label, task, diarized, num_speakers=None, engine=None):
     """Describe which engine produced a transcript, for the audit footer.
 
     Returns a plain dict so Phase 3 can extend it (adapter revision SHA,
@@ -266,10 +266,21 @@ def build_provenance(*, mode, language_label, task, diarized, num_speakers=None)
     principle as transcribe_audio(). Callers pass display-level values
     (the language *label* the user picked, not the ISO code) so the footer
     reads the way the operator set it up.
+
+    `engine` defaults to FAST_MODE_ENGINE_LABEL so the existing Fast-mode call
+    site is unaffected. Accurate mode passes its own engine's label explicitly
+    — accurate_engine.transcribe()'s result dict already carries it as
+    result["engine"] (ACCURATE_ENGINE_LABEL), so the caller never needs to
+    import accurate_engine just to get this string. Getting this wrong would
+    mean an Accurate-mode transcript's audit footer claiming it was produced by
+    Fast mode instead — a provenance product exists specifically to prevent
+    that kind of quiet misattribution, so this is a correctness fix landing
+    alongside Wave 2.3, not the richer 2.6 extension (model-ID / adapter
+    revision SHA), which remains separate and untouched.
     """
     from datetime import datetime
     return {
-        "engine": FAST_MODE_ENGINE_LABEL,
+        "engine": engine or FAST_MODE_ENGINE_LABEL,
         "mode": mode,
         "language": language_label,
         "task": task,
@@ -483,6 +494,182 @@ class NameAssignWindow(ctk.CTkToplevel):
         self.callback(name_map)
         self.destroy()
 
+
+class AccurateConsentDialog(ctk.CTkToplevel):
+    """First-activation consent screen for Accurate mode's model download.
+
+    Shown once, before any network access, using real numbers from
+    accurate_model_download.describe_download() — never a number remembered
+    from an earlier investigation, which could be stale by the time a user
+    actually clicks the button. `on_confirm`/`on_decline` follow the same
+    callback-then-destroy convention as NameAssignWindow.confirm() above.
+    """
+
+    def __init__(self, parent, info, *, on_confirm, on_decline):
+        super().__init__(parent)
+        self.title("StillScript — Accurate Mode Setup")
+        self.geometry("480x420")
+        self.resizable(False, False)
+        self.grab_set()
+        self._on_confirm = on_confirm
+        self._on_decline = on_decline
+
+        # Kept as attributes (not just packed and forgotten) so the real
+        # numbers behind the dialog can be checked directly rather than by
+        # parsing rendered label text.
+        self.size_gb = info["total_bytes"] / (1024 ** 3)
+        self.info_labels = []
+
+        ctk.CTkLabel(
+            self, text="🎯 Accurate Mode — one-time setup",
+            font=("Arial", 17, "bold"),
+        ).pack(pady=(20, 4))
+        ctk.CTkLabel(
+            self,
+            text="Accurate mode uses a larger, more precise speech model that\n"
+                 "is not included in the installer. It downloads once, the\n"
+                 "first time you use Accurate mode.",
+            font=("Arial", 12), justify="center",
+        ).pack(pady=(0, 16))
+
+        info_frame = ctk.CTkFrame(self, fg_color="gray20")
+        info_frame.pack(fill="x", padx=24, pady=4)
+
+        def _row(icon_text):
+            label = ctk.CTkLabel(
+                info_frame, text=icon_text, font=("Arial", 12),
+                justify="left", anchor="w", wraplength=400,
+            )
+            label.pack(fill="x", padx=14, pady=8)
+            self.info_labels.append(label)
+
+        _row(f"📦  Size: about {self.size_gb:.1f} GB")
+        _row("🌐  Requires an internet connection.")
+        _row(
+            "⏱  Time: this can take anywhere from tens of minutes to several\n"
+            "hours, depending on your connection speed — on a slower line,\n"
+            "expect it to take hours, not minutes. You can leave StillScript\n"
+            "running in the background; if it's interrupted, it picks up\n"
+            "where it left off rather than starting over."
+        )
+
+        # Confidentiality point — stated plainly, in its own visually distinct
+        # block, not folded into the paragraph above as fine print.
+        ctk.CTkLabel(
+            self,
+            text="🔒 This download is one-way: it only fetches the language\n"
+                 "model's weights onto your computer. It has nothing to do with\n"
+                 "your recordings — your audio and transcripts are never\n"
+                 "uploaded, now or ever.",
+            font=("Arial", 11, "bold"), text_color="#8fd19e",
+            justify="center", wraplength=420,
+        ).pack(pady=(16, 4))
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        self.decline_btn = ctk.CTkButton(
+            btn_frame, text="Not now", command=self._decline,
+            width=150, height=42, fg_color="gray30",
+        )
+        self.decline_btn.grid(row=0, column=0, padx=8)
+        self.confirm_btn = ctk.CTkButton(
+            btn_frame, text="⬇ Download & Continue", command=self._confirm,
+            width=220, height=42, fg_color="#1f538d", font=("Arial", 13, "bold"),
+        )
+        self.confirm_btn.grid(row=0, column=1, padx=8)
+
+    def _confirm(self):
+        self.destroy()
+        self._on_confirm()
+
+    def _decline(self):
+        self.destroy()
+        self._on_decline()
+
+
+class AccurateDownloadProgressDialog(ctk.CTkToplevel):
+    """Progress display for the Accurate-mode model download.
+
+    Rendering is driven entirely by DownloadProgress objects handed to
+    update_progress() — the same shape accurate_model_download already
+    defines and emits, not a new one invented here. `on_cancel` is called once,
+    from the Tk main thread (this dialog's Cancel button is a normal Tkinter
+    command), and only sets a threading.Event; it does not stop anything by
+    itself, cancellation happens in the download function on its own schedule.
+    """
+
+    def __init__(self, parent, *, on_cancel):
+        super().__init__(parent)
+        self.title("StillScript — Downloading Accurate-mode model")
+        self.geometry("460x220")
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", lambda: None)  # no window-close shortcut around Cancel
+        self.grab_set()
+        self._on_cancel = on_cancel
+
+        self.phase_label = ctk.CTkLabel(
+            self, text="Checking the download…", font=("Arial", 13, "bold"),
+        )
+        self.phase_label.pack(pady=(24, 8))
+
+        self.bar = ctk.CTkProgressBar(self, width=380)
+        self.bar.pack(pady=6)
+        self.bar.set(0)
+
+        self.detail_label = ctk.CTkLabel(
+            self, text="", font=("Arial", 11), text_color="gray",
+        )
+        self.detail_label.pack(pady=(4, 10))
+
+        self.cancel_btn = ctk.CTkButton(
+            self, text="Cancel", command=self._cancel,
+            width=140, height=36, fg_color="gray30",
+        )
+        self.cancel_btn.pack(pady=6)
+
+        self._cancelling = False
+
+    def update_progress(self, progress):
+        """Render one DownloadProgress sample. Safe to call only on the main thread."""
+        if self._cancelling:
+            return
+        self.phase_label.configure(text=progress.message)
+        self.bar.set(max(0.0, min(1.0, progress.fraction)))
+
+        if progress.total_bytes:
+            done_mib = progress.downloaded_bytes / (1024 ** 2)
+            total_mib = progress.total_bytes / (1024 ** 2)
+            rate_mib = progress.bytes_per_second / (1024 ** 2)
+            eta = "…" if progress.eta_seconds is None else _format_eta(progress.eta_seconds)
+            self.detail_label.configure(
+                text=f"{done_mib:,.0f} / {total_mib:,.0f} MiB   "
+                     f"{rate_mib:.2f} MiB/s   ETA {eta}"
+            )
+        else:
+            self.detail_label.configure(text="")
+
+    def _cancel(self):
+        # Chunk-level cancellation (see accurate_model_download's RESUME notes):
+        # this takes effect after the chunk in flight finishes, not instantly.
+        # Say so, and disable the button so a second click can't do anything odd.
+        self._cancelling = True
+        self.cancel_btn.configure(state="disabled", text="Cancelling…")
+        self.phase_label.configure(
+            text="Cancelling — finishing the current part first…")
+        self._on_cancel()
+
+
+def _format_eta(seconds):
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 # ─────────────────────────────────────────────
 #  MAIN APPLICATION
 # ─────────────────────────────────────────────
@@ -585,11 +772,11 @@ class DanScribeApp(ctk.CTk):
             variable=self.lang_var, width=380
         ).pack(pady=5)
 
-        # 3. Mode — Fast (default, active) vs Accurate (built but not yet
-        # available). Two plain buttons rather than CTkSegmentedButton because
-        # the latter can't render one segment disabled while the other is live.
-        # Phase 3 flips the Accurate button to state="normal", wires its command
-        # and branches the engine — no restructuring here.
+        # 3. Mode — Fast vs Accurate. Two plain buttons rather than
+        # CTkSegmentedButton because Phase 1/2 needed to render one segment
+        # disabled while the other was live; Accurate is active as of Wave 2.3,
+        # but the two-button layout is kept rather than reshuffled, since it
+        # already matches the rest of the app's button styling.
         ctk.CTkLabel(self, text="3. Mode:", font=("Arial", 13, "bold")).pack(pady=(10, 2))
         self.mode_var = ctk.StringVar(value="fast")
 
@@ -605,19 +792,10 @@ class DanScribeApp(ctk.CTk):
 
         self.accurate_btn = ctk.CTkButton(
             mode_frame, text="🎯 Accurate (Akkuraat)",
-            width=185, height=40, fg_color="gray30",
-            state="disabled"
+            command=self._select_accurate_mode,
+            width=185, height=40, fg_color="gray30", font=("Arial", 13, "bold")
         )
         self.accurate_btn.grid(row=0, column=1)
-
-        # "Coming soon" caption under the disabled Accurate button.
-        caption = ctk.CTkFrame(self, fg_color="transparent")
-        caption.pack(pady=(0, 4))
-        ctk.CTkLabel(caption, text="", width=185).grid(row=0, column=0, padx=(0, 8))
-        ctk.CTkLabel(
-            caption, text="Coming soon", width=185,
-            font=("Arial", 10), text_color="gray"
-        ).grid(row=0, column=1)
 
         # 4. Speaker identification
         ctk.CTkLabel(self, text="4. Speaker Identification:", font=("Arial", 13, "bold")).pack(pady=(10, 2))
@@ -683,10 +861,20 @@ class DanScribeApp(ctk.CTk):
         self.output_box.pack(pady=5)
 
     # ── MODE SELECTION ──────────────────────
+    # Both buttons stay enabled and clickable; the colour swap is the only
+    # feedback that a mode is "selected" (there is no separate indicator), so
+    # both handlers must repaint both buttons — not just set mode_var — or a
+    # click would change behaviour invisibly.
 
     def _select_fast_mode(self):
-        # Only Fast is selectable today; this keeps the state var authoritative.
         self.mode_var.set("fast")
+        self.fast_btn.configure(fg_color="#1f538d")
+        self.accurate_btn.configure(fg_color="gray30")
+
+    def _select_accurate_mode(self):
+        self.mode_var.set("accurate")
+        self.accurate_btn.configure(fg_color="#1f538d")
+        self.fast_btn.configure(fg_color="gray30")
 
     # ── SETTINGS / CREDITS ──────────────────
 
@@ -714,34 +902,37 @@ class DanScribeApp(ctk.CTk):
             messagebox.showerror("Error", "The selected file is empty.")
             return
 
-        # Mode guard (defense in depth). The Accurate button is disabled in the
-        # UI, but never let anything other than Fast start a run — Accurate must
-        # never silently fall back to the Medium engine.
         mode = self.mode_var.get()
-        if mode != "fast":
-            messagebox.showinfo(
-                "DanScribe AI",
-                "Accurate mode is not yet available.\nThis feature is coming soon."
-            )
-            return
-        model_name = FAST_MODE_MODEL
 
         # Save last used settings
         self.config_data["last_language"] = self.lang_var.get()
         save_config(self.config_data)
 
         task_choice = self.task_var.get()
-        lang_code = LANG_CODES[self.lang_var.get()]
+        language_label = self.lang_var.get()
+        lang_code = LANG_CODES[language_label]
         whisper_task = "translate" if task_choice == "Translate to English" else "transcribe"
         do_diarize = self.diarize_var.get()
         num_speakers = int(self.num_speakers_var.get())
 
+        self.output_box.delete("1.0", "end")
+
+        # Accurate mode has its own flow — first a possible download (with
+        # consent), then transcription. It is never allowed to fall back to
+        # the Fast/Medium engine, so this branches out completely rather than
+        # sharing run() below.
+        if mode == "accurate":
+            self._start_accurate_transcription(
+                file_path, language_label, lang_code, whisper_task, do_diarize, num_speakers,
+            )
+            return
+
+        model_name = FAST_MODE_MODEL
         self.status_label.configure(text=f"Status: Loading model ({model_name})...")
         self.progress_bar.set(0.1)
         self.main_btn.configure(state="disabled")
         self.name_btn.configure(state="disabled")
         self.summarize_btn.configure(state="disabled")
-        self.output_box.delete("1.0", "end")
 
         def run():
             try:
@@ -802,6 +993,236 @@ class DanScribeApp(ctk.CTk):
             self._ui(self.progress_bar.set, 0)
 
         threading.Thread(target=run, daemon=True).start()
+
+    # ── ACCURATE MODE (Wave 2.3) ─────────────
+    # First activation: consent -> cancellable/resumable download -> full
+    # verification -> transcription. Subsequent activations: straight to
+    # transcription. Both routes converge on _transcribe_with_accurate_model()
+    # for the actual engine call, so Wave 2.4's transcription-progress /
+    # time-warning UI only has one call site to extend, not two.
+    #
+    # accurate_model_download is imported lazily inside these methods, the
+    # same discipline accurate_engine.py and transcribe_audio_accurate() already
+    # follow — Fast mode's runtime must never acquire this import just because
+    # the module exists on disk.
+
+    def _start_accurate_transcription(self, file_path, language_label, lang_code,
+                                       whisper_task, do_diarize, num_speakers):
+        import accurate_model_download as amd
+
+        self.main_btn.configure(state="disabled")
+        self.name_btn.configure(state="disabled")
+        self.summarize_btn.configure(state="disabled")
+
+        if amd.is_model_ready():
+            # Subsequent activation — skip consent AND the download UI
+            # entirely, per masterplan 2.3. ensure_accurate_model() still runs
+            # (a local stat + JSON read; no network) so the directory handed to
+            # the engine is always the one it actually verified, never assumed.
+            self.status_label.configure(text="Status: Loading Accurate-mode model...")
+            self.progress_bar.set(0.1)
+
+            def already_ready_worker():
+                try:
+                    model_dir = amd.ensure_accurate_model()
+                except Exception as e:
+                    logger.error("Accurate model check failed unexpectedly: %s", e, exc_info=True)
+                    self._ui(self._on_accurate_setup_failed, e)
+                    return
+                self._transcribe_with_accurate_model(
+                    model_dir, file_path, language_label, lang_code,
+                    whisper_task, do_diarize, num_speakers,
+                )
+
+            threading.Thread(target=already_ready_worker, daemon=True).start()
+            return
+
+        # First activation. Fetch the REAL size/file-count before asking for
+        # consent — never a number remembered from an earlier report, which
+        # could be stale — off the main thread like every other network call.
+        self.status_label.configure(text="Status: Checking Accurate-mode download details…")
+
+        def fetch_info():
+            try:
+                info = amd.describe_download()
+            except Exception as e:
+                self._ui(self._accurate_consent_check_failed, e)
+                return
+            self._ui(
+                self._show_accurate_consent, info,
+                file_path, language_label, lang_code, whisper_task, do_diarize, num_speakers,
+            )
+
+        threading.Thread(target=fetch_info, daemon=True).start()
+
+    def _on_accurate_setup_failed(self, exc):
+        self.status_label.configure(text="Status: Ready")
+        self.progress_bar.set(0)
+        self.main_btn.configure(state="normal")
+        messagebox.showerror("DanScribe AI", f"Accurate mode could not start:\n{exc}")
+
+    def _accurate_consent_check_failed(self, exc):
+        self.status_label.configure(text="Status: Ready")
+        self.main_btn.configure(state="normal")
+        messagebox.showerror(
+            "DanScribe AI",
+            "Could not check the Accurate-mode download details. This usually "
+            f"means there is no internet connection right now.\n\n{exc}\n\n"
+            "Fast mode works offline."
+        )
+
+    def _show_accurate_consent(self, info, file_path, language_label, lang_code,
+                                whisper_task, do_diarize, num_speakers):
+        self.status_label.configure(text="Status: Ready")
+
+        def on_confirm():
+            self._download_then_transcribe_accurate(
+                file_path, language_label, lang_code, whisper_task, do_diarize, num_speakers,
+            )
+
+        def on_decline():
+            # The user said no. Accurate mode simply isn't used this time —
+            # reset and don't ask again until they click Accurate again.
+            self.main_btn.configure(state="normal")
+            self.progress_bar.set(0)
+
+        AccurateConsentDialog(self, info, on_confirm=on_confirm, on_decline=on_decline)
+
+    def _download_then_transcribe_accurate(self, file_path, language_label, lang_code,
+                                            whisper_task, do_diarize, num_speakers):
+        import accurate_model_download as amd
+
+        cancel_event = threading.Event()
+        progress_dialog = AccurateDownloadProgressDialog(self, on_cancel=cancel_event.set)
+
+        def worker():
+            try:
+                model_dir = amd.ensure_accurate_model(
+                    progress_callback=lambda p: self._ui(progress_dialog.update_progress, p),
+                    cancel_event=cancel_event,
+                )
+            except amd.AccurateModelDownloadCancelled:
+                # Catch this BEFORE AccurateModelDownloadError (its own base
+                # class) — a deliberate cancel is not a failure and must never
+                # show an error dialog. Whatever chunks landed stay on disk.
+                self._ui(self._on_accurate_download_cancelled, progress_dialog)
+                return
+            except amd.AccurateModelDownloadError as e:
+                self._ui(
+                    self._on_accurate_download_failed, progress_dialog, e,
+                    file_path, language_label, lang_code, whisper_task, do_diarize, num_speakers,
+                )
+                return
+            except Exception as e:
+                logger.error("Accurate model download failed unexpectedly: %s", e, exc_info=True)
+                self._ui(
+                    self._on_accurate_download_failed, progress_dialog, e,
+                    file_path, language_label, lang_code, whisper_task, do_diarize, num_speakers,
+                )
+                return
+
+            self._ui(progress_dialog.destroy)
+            self._transcribe_with_accurate_model(
+                model_dir, file_path, language_label, lang_code,
+                whisper_task, do_diarize, num_speakers,
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_accurate_download_cancelled(self, dialog):
+        dialog.destroy()
+        self.status_label.configure(text="Status: Ready (download cancelled)")
+        self.progress_bar.set(0)
+        self.main_btn.configure(state="normal")
+        # Deliberately no error dialog — the user asked for this, and nothing
+        # already downloaded was lost (see accurate_model_download's
+        # cancellation notes: chunks are only ever removed after the guard
+        # passes, never on cancel).
+
+    def _on_accurate_download_failed(self, dialog, exc, file_path, language_label, lang_code,
+                                      whisper_task, do_diarize, num_speakers):
+        dialog.destroy()
+        self.status_label.configure(text="Status: Ready")
+        self.progress_bar.set(0)
+
+        # AccurateModelDownloadError's message is already written for a
+        # non-technical user (masterplan 2.1a.2) — shown as-is, no wrapping.
+        can_retry = getattr(exc, "can_retry", False)
+        if can_retry and messagebox.askretrycancel("DanScribe AI", str(exc)):
+            self._download_then_transcribe_accurate(
+                file_path, language_label, lang_code, whisper_task, do_diarize, num_speakers,
+            )
+            return
+
+        self.main_btn.configure(state="normal")
+
+    def _transcribe_with_accurate_model(self, model_dir, file_path, language_label, lang_code,
+                                         whisper_task, do_diarize, num_speakers):
+        """Runs on a background thread — the shared tail for both Accurate-mode
+        routes above. Everything from here down is what Wave 2.4's duration
+        warning / generate()-progress UI will extend; the transcribe_audio_
+        accurate() call is the seam (an extra progress_callback= kwarg is all
+        it would need)."""
+        self._ui(self.status_label.configure, text="Status: Loading Accurate-mode model...")
+        self._ui(self.progress_bar.set, 0.3)
+        try:
+            self._ui(self.status_label.configure,
+                     text="Status: Processing audio (Accurate mode)...")
+
+            result = transcribe_audio_accurate(
+                file_path, language=lang_code, task=whisper_task, model_dir=model_dir,
+            )
+
+            self._ui(self.progress_bar.set, 0.7)
+
+            if do_diarize:
+                self._ui(self.status_label.configure, text="Status: Identifying speakers...")
+                segments = self._diarize(result, max_speakers=num_speakers, audio_path=file_path)
+                self.diarized_segments = segments
+                transcript_text = self._segments_to_text(segments, self.speaker_name_map)
+            else:
+                self.diarized_segments = None
+                transcript_text = result["text"]
+
+            self.current_transcript = transcript_text
+
+            provenance = build_provenance(
+                mode="Accurate (Akkuraat)",
+                language_label=language_label,
+                task=whisper_task,
+                diarized=do_diarize,
+                num_speakers=num_speakers,
+                # accurate_engine.transcribe()'s result already carries its own
+                # label (ACCURATE_ENGINE_LABEL) — reuse it rather than import
+                # accurate_engine here just for a string.
+                engine=result.get("engine"),
+            )
+            output_path = self._save_transcript(
+                transcript_text, file_path, provenance=provenance
+            )
+
+            preview = transcript_text[:2000] + ("..." if len(transcript_text) > 2000 else "")
+            self._ui(self.progress_bar.set, 1.0)
+            self._ui(self.status_label.configure, text="✅ Done!")
+            self._ui(self.output_box.insert, "1.0", preview)
+
+            if do_diarize and self.diarized_segments:
+                self._ui(self.name_btn.configure, state="normal")
+            self._ui(self.summarize_btn.configure, state="normal")
+
+            self._ui(
+                messagebox.showinfo, "DanScribe AI",
+                f"Transcription complete!\nSaved to folder:\n{output_path}\n\n"
+                "Both .txt and .docx files created.",
+            )
+
+        except Exception as e:
+            logger.error("Accurate transcription failed: %s", e, exc_info=True)
+            self._ui(messagebox.showerror, "Error", f"An error occurred:\n{e}")
+            self._ui(self.status_label.configure, text="Status: Error")
+
+        self._ui(self.main_btn.configure, state="normal")
+        self._ui(self.progress_bar.set, 0)
 
     # ── DIARIZATION ─────────────────────────
 

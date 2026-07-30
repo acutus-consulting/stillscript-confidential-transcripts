@@ -318,6 +318,40 @@ class AccurateModelDownloadError(AccurateEngineUnavailable):
         self.can_retry = can_retry
 
 
+class AccurateModelDownloadCancelled(AccurateModelDownloadError):
+    """Raised when a caller-supplied `cancel_event` was set mid-download.
+
+    A distinct subclass, not a generic AccurateModelDownloadError, so a UI can
+    tell "the user cancelled on purpose" apart from "something went wrong" —
+    catch this one first and skip the error dialog entirely; the user already
+    knows what they did.
+
+    Never raised for anything the user didn't ask for. Whatever chunks had
+    already landed on disk are untouched — cancelling is deliberately not a
+    failure path, so none of the guard-failure cleanup in
+    ensure_accurate_model() runs, and a later attempt resumes exactly where
+    this one stopped.
+    """
+
+    def __init__(self):
+        super().__init__(
+            "Download cancelled.",
+            detail="cancel_event was set",
+            can_retry=True,
+        )
+
+
+def _check_cancelled(cancel_event):
+    """Raise AccurateModelDownloadCancelled if the caller asked to stop.
+
+    Checked between whole chunks (~200 MiB units), not mid-byte — the same
+    granularity an involuntary interruption already has (see RESUME in the
+    module docstring), so a deliberate cancel is never worse than a crash.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        raise AccurateModelDownloadCancelled()
+
+
 # ─────────────────────────────────────────────
 #  PROGRESS
 # ─────────────────────────────────────────────
@@ -666,6 +700,28 @@ def is_verified_download(model_dir, repo_id=REPO_ID, revision=None):
     )
 
 
+def is_model_ready(model_dir=None, repo_id=REPO_ID):
+    """True when `ensure_accurate_model()` would short-circuit without a network call.
+
+    For a caller (masterplan 2.3's UI) that needs to know, BEFORE doing
+    anything, whether this is a first activation (show the download consent
+    dialog) or a later one (go straight to transcription) — without either
+    duplicating ensure_accurate_model()'s own logic or paying for a describe_
+    download() Hub round trip just to find out.
+
+    Mirrors the exact two conditions ensure_accurate_model() early-returns on:
+    a verified managed download, or a directory the caller pointed us at that
+    already has model files. If those conditions ever change, change them
+    here too — kept as a separate, named predicate (rather than inlined only
+    inside ensure_accurate_model) specifically so a UI has something safe to
+    call ahead of time.
+    """
+    target = Path(resolve_model_dir(model_dir))
+    if is_verified_download(target, repo_id):
+        return True
+    return not is_managed(target) and has_model_files(target)
+
+
 # ─────────────────────────────────────────────
 #  PRE-FLIGHT
 # ─────────────────────────────────────────────
@@ -935,7 +991,8 @@ def _snapshot(repo_id, revision, target, tqdm_class, max_workers):
     )
 
 
-def _fetch_with_fallback(fetch, tracker_factory, progress_callback, message, label):
+def _fetch_with_fallback(fetch, tracker_factory, progress_callback, message, label,
+                         cancel_event=None):
     """Run `fetch(tqdm_class, tracker)` under the retry + Xet-fallback policy.
 
     This is the whole of 2.1a.2's transport behaviour in one place: attempt on
@@ -947,7 +1004,10 @@ def _fetch_with_fallback(fetch, tracker_factory, progress_callback, message, lab
 
     `fetch` is called with the tqdm stand-in for the current attempt; it may be
     called more than once, so it must be safe to re-run against whatever the
-    previous attempt left on disk.
+    previous attempt left on disk. It is also where `cancel_event` actually gets
+    checked (inside `_fetch_chunks`, between chunks) — this function only checks
+    it between ATTEMPTS, so a cancel during the retry backoff sleep stops the
+    retry loop rather than starting another one.
 
     Returns (result, transport) where transport is "xet" or "https".
     """
@@ -955,6 +1015,7 @@ def _fetch_with_fallback(fetch, tracker_factory, progress_callback, message, lab
     last_error = None
 
     for attempt in range(1, MAX_TRANSPORT_ATTEMPTS + 1):
+        _check_cancelled(cancel_event)
         tracker = tracker_factory()
         tqdm_class = _make_tqdm_class(tracker)
         transport = "https" if disable_xet else "xet"
@@ -974,6 +1035,11 @@ def _fetch_with_fallback(fetch, tracker_factory, progress_callback, message, lab
             logger.info("Accurate model %s finished via %s", label, transport)
             return result, transport
         except KeyboardInterrupt:
+            raise
+        except AccurateModelDownloadCancelled:
+            # A deliberate stop, not a transport problem: must propagate exactly
+            # as raised, never reclassified into a "could not be downloaded"
+            # friendly-error or retried.
             raise
         except Exception as exc:  # noqa: BLE001 - classified immediately below
             last_error = exc
@@ -1018,18 +1084,27 @@ def _fetch_with_fallback(fetch, tracker_factory, progress_callback, message, lab
     ) from last_error
 
 
-def _download_snapshot(repo_id, revision, target, total_bytes, progress_callback, max_workers):
+def _download_snapshot(repo_id, revision, target, total_bytes, progress_callback, max_workers,
+                       cancel_event=None):
     """LEGACY single-file path (2.1a.2). Fetch the whole repo in one snapshot.
 
     Kept working, unchanged in behaviour, while the chunked layout proves itself
     in the field. See LAYOUTS in the module docstring for when this is used and
     when it can go.
+
+    CANCELLATION GRANULARITY IS COARSER HERE than on the chunked path. This
+    layout has no chunk boundary to check between, so `cancel_event` is only
+    checked before the single snapshot_download() call starts — once that is
+    running, cancelling has no effect until it finishes or fails on its own.
+    This is the pre-existing single-file transport's real limitation, not a
+    gap introduced here; it is one more reason 2.3 defaults to layout="chunked".
     """
     target.mkdir(parents=True, exist_ok=True)
     # Once, before the first attempt — not per attempt, so we never race a
     # transfer this loop itself started.
     if is_managed(target):
         _prune_stale_incomplete(target)
+    _check_cancelled(cancel_event)
 
     return _fetch_with_fallback(
         fetch=lambda tqdm_class, _tracker: _snapshot(
@@ -1038,6 +1113,7 @@ def _download_snapshot(repo_id, revision, target, total_bytes, progress_callback
         progress_callback=progress_callback,
         message="Downloading the Accurate-mode language model…",
         label="download",
+        cancel_event=cancel_event,
     )
 
 
@@ -1151,12 +1227,24 @@ def _existing_chunks(chunk_dir, manifest, progress_callback=None):
     return present
 
 
-def _fetch_chunks(repo_id, revision, manifest, target, chunk_dir, present, tqdm_class, tracker):
-    """Download every chunk not already present. Verifies each on arrival."""
+def _fetch_chunks(repo_id, revision, manifest, target, chunk_dir, present, tqdm_class, tracker,
+                  cancel_event=None):
+    """Download every chunk not already present. Verifies each on arrival.
+
+    `cancel_event` is checked once per loop iteration, BEFORE starting the next
+    chunk's `_hf_file()` call — never mid-chunk. This is the real cancellation
+    point for the chunked layout: a chunk already in flight always finishes (or
+    fails on its own), and only the NEXT one is skipped. Whatever chunks are
+    already in `present` (this call and previous ones) are left on disk exactly
+    as they are — cancelling never deletes anything, by construction: this
+    function has no delete-on-cancel code path, only the ordinary
+    delete-on-corruption one a few lines below.
+    """
     for entry in manifest["chunks"]:
         name = entry["name"]
         if name in present:
             continue
+        _check_cancelled(cancel_event)
         # local_dir is the model directory, and the repo path is "chunks/<name>",
         # so huggingface_hub writes straight into <target>/chunks/ — which is
         # where we want it. No moving files around afterwards.
@@ -1260,16 +1348,26 @@ def _discard_chunks(target):
     return reclaimed
 
 
-def _download_chunked(repo_id, revision, target, progress_callback, max_workers):
+def _download_chunked(repo_id, revision, target, progress_callback, max_workers,
+                      cancel_event=None):
     """Fetch the model as chunks, verify, and reassemble. Returns (path, transport).
 
     The staging directory lives inside the model directory so that deleting the
     model deletes the parts too, and is hidden so nothing walking the model
     directory mistakes a raw byte slice for a weights file.
+
+    `cancel_event`, if given, is a `threading.Event`. Setting it stops the
+    download between chunks (see `_fetch_chunks`) and raises
+    AccurateModelDownloadCancelled — every chunk fetched so far is left on disk
+    untouched, so a later call to `ensure_accurate_model()` with the same
+    `cancel_event` unset (or a fresh one) resumes rather than restarts. Checked
+    here too, before any network call, so a cancel_event set immediately after
+    the consent dialog is honoured without even asking the Hub for the manifest.
     """
     target.mkdir(parents=True, exist_ok=True)
     if is_managed(target):
         _prune_stale_incomplete(target)
+    _check_cancelled(cancel_event)
 
     _emit(progress_callback, DownloadProgress(
         phase="preparing", message="Checking the download…"))
@@ -1304,7 +1402,7 @@ def _download_chunked(repo_id, revision, target, progress_callback, max_workers)
             ignore_patterns=[ORIGINAL_WEIGHTS_FILENAME, f"{REPO_CHUNK_DIR}/*"],
         )
         return _fetch_chunks(repo_id, revision, manifest, target, str(chunk_dir),
-                             present, tqdm_class, tracker)
+                             present, tqdm_class, tracker, cancel_event=cancel_event)
 
     total_bytes = manifest["total_bytes"]
     _, transport = _fetch_with_fallback(
@@ -1316,6 +1414,7 @@ def _download_chunked(repo_id, revision, target, progress_callback, max_workers)
         progress_callback=progress_callback,
         message="Downloading the Accurate-mode language model…",
         label="chunked download",
+        cancel_event=cancel_event,
     )
 
     destination = str(target / manifest["original_filename"])
@@ -1419,6 +1518,7 @@ def ensure_accurate_model(
     force=False,
     max_workers=8,
     layout=DEFAULT_LAYOUT,
+    cancel_event=None,
 ):
     """Make sure the Accurate model is on this machine, and return its directory.
 
@@ -1447,6 +1547,19 @@ def ensure_accurate_model(
                          as a fallback until the chunked path has proven itself.
       repo_id, revision  Overridable for tests. Revision defaults to the pin that
                          matches `layout`; do not pass "main".
+      cancel_event       Optional threading.Event. Set it to stop an in-progress
+                         download early. On the chunked layout (the default)
+                         this takes effect between chunks — whatever chunks have
+                         already landed are left on disk, untouched, so a later
+                         call resumes rather than restarts. Raises
+                         AccurateModelDownloadCancelled, which callers should
+                         catch BEFORE AccurateModelDownloadError so a deliberate
+                         cancel is never shown as a failure. Checked before any
+                         network call too, so setting it before this function is
+                         even entered is honoured immediately. Never checked once
+                         `verify_merged_model()` starts — a download that has
+                         already finished should be allowed to verify and land
+                         cleanly rather than being thrown away on a late click.
 
     Behaviour
       - Already downloaded and verified → returns at once.
@@ -1493,6 +1606,11 @@ def ensure_accurate_model(
     _emit(progress_callback, DownloadProgress(
         phase="preparing", message="Checking the download…",
     ))
+    # Checked before the first network call, not just inside the download
+    # dispatch below — a cancel_event set before this function was even
+    # entered (or reused from a previous, already-cancelled attempt by
+    # mistake) must not cost a Hub round trip.
+    _check_cancelled(cancel_event)
 
     try:
         info = describe_download(repo_id, revision, layout=layout)
@@ -1516,10 +1634,12 @@ def ensure_accurate_model(
     if layout == "chunked":
         path, transport = _download_chunked(
             repo_id, revision, target, progress_callback, max_workers,
+            cancel_event=cancel_event,
         )
     else:
         path, transport = _download_snapshot(
             repo_id, revision, target, total_bytes, progress_callback, max_workers,
+            cancel_event=cancel_event,
         )
 
     # ── Full verification (masterplan 2.2, in the one mode that is

@@ -922,7 +922,7 @@ for entry in MANIFEST["chunks"]:
 
 amd.verify_merged_model = verify_with_test_fingerprint
 real_download_chunked = amd._download_chunked
-amd._download_chunked = lambda repo, rev, tgt, cb, mw: (
+amd._download_chunked = lambda repo, rev, tgt, cb, mw, cancel_event=None: (
     str(tgt / amd.ORIGINAL_WEIGHTS_FILENAME), "https")
 try:
     amd.ensure_accurate_model(repo_id=TINY_REPO, revision="main", layout="chunked")
@@ -1006,6 +1006,225 @@ try:
     check("an unknown layout is refused", False, "no exception")
 except ValueError:
     check("an unknown layout is refused", True)
+
+
+print("\n=== 23. is_model_ready() — the UI's pre-check for Wave 2.3 ===")
+# The button's "first activation vs subsequent activation" decision has to be
+# made WITHOUT touching the network (or it isn't a decision, it's a delay), and
+# without re-deriving ensure_accurate_model()'s own logic by hand. is_model_ready()
+# is that predicate; this section proves it agrees with ensure_accurate_model()'s
+# real short-circuit behaviour, not just that it returns a plausible-looking bool.
+reset_managed()
+target = amd.managed_model_dir()
+check("nothing on disk -> not ready", amd.is_model_ready(target) is False)
+
+os.makedirs(target, exist_ok=True)
+for name in amd.REQUIRED_MODEL_FILES:
+    open(os.path.join(target, name), "w").write("{}")
+check("model files without a completion stamp -> still not ready "
+      "(an interrupted download can leave files but never finish)",
+      amd.is_model_ready(target) is False)
+
+amd._write_stamp(target, amd.REPO_ID, amd.CHUNKED_REVISION, {"ok": True}, 123)
+check("stamped + files present -> ready", amd.is_model_ready(target) is True)
+
+# The OTHER early-return path in ensure_accurate_model(): a directory the user
+# pointed us at explicitly, not managed here, with model files but no stamp.
+user_dir = os.path.join(TEST_ROOT, "ready_user_dir")
+os.makedirs(user_dir, exist_ok=True)
+for name in amd.REQUIRED_MODEL_FILES:
+    open(os.path.join(user_dir, name), "w").write("{}")
+check("a configured (unmanaged) directory with model files -> ready even "
+      "without a stamp, matching ensure_accurate_model()'s second early return",
+      amd.is_model_ready(user_dir) is True)
+
+# The actual point of this function: when it says "ready", a real call to
+# ensure_accurate_model() must NOT touch the network. Prove it by making the
+# network path explode if it's ever reached.
+def _network_must_not_be_touched(*a, **kw):
+    raise AssertionError("ensure_accurate_model() touched the network on a "
+                         "call is_model_ready() said was already satisfied")
+
+
+saved_describe = amd.describe_download
+amd.describe_download = _network_must_not_be_touched
+try:
+    check("is_model_ready()==True on the stamped dir", amd.is_model_ready(target) is True)
+    result = amd.ensure_accurate_model(model_dir=str(target))
+    check("...and ensure_accurate_model() on that exact call path returns "
+          "instantly without describe_download() ever running",
+          result == str(target), result)
+finally:
+    amd.describe_download = saved_describe
+
+
+print("\n=== 24. AccurateModelDownloadCancelled — a distinct, non-error outcome ===")
+check("it is a subclass of AccurateModelDownloadError (existing handlers still "
+      "catch it if they don't check type)",
+      issubclass(amd.AccurateModelDownloadCancelled, amd.AccurateModelDownloadError))
+check("...but can_retry is True (retrying just means trying again, not "
+      "working around a fault)",
+      amd.AccurateModelDownloadCancelled().can_retry is True)
+
+ev = threading.Event()
+check("_check_cancelled() is a no-op when the event is unset (or None)",
+      amd._check_cancelled(ev) is None and amd._check_cancelled(None) is None)
+ev.set()
+try:
+    amd._check_cancelled(ev)
+    check("_check_cancelled() raises once the event is set", False, "no exception")
+except amd.AccurateModelDownloadCancelled:
+    check("_check_cancelled() raises once the event is set", True)
+
+# The exact bug this section exists to prevent: _fetch_with_fallback's generic
+# `except Exception` classifying a cancellation as a transport failure and
+# replacing it with a "could not be downloaded" friendly error, burying what
+# actually happened and — worse — burning through MAX_TRANSPORT_ATTEMPTS
+# retrying something the user explicitly stopped.
+cancel_ev = threading.Event()
+calls = []
+
+
+def cancels_immediately(tqdm_class, tracker):
+    calls.append(1)
+    cancel_ev.set()
+    amd._check_cancelled(cancel_ev)  # what _fetch_chunks would do on its next iteration
+
+
+try:
+    amd._fetch_with_fallback(
+        fetch=cancels_immediately,
+        tracker_factory=lambda: amd._ByteTracker(1000),
+        progress_callback=None, message="x", label="test",
+        cancel_event=cancel_ev,
+    )
+    check("cancellation propagates out of _fetch_with_fallback", False, "no exception")
+except amd.AccurateModelDownloadCancelled:
+    check("cancellation propagates out of _fetch_with_fallback", True)
+    check("...as itself, not reclassified as a generic download error "
+          "(the except-Exception branch must never catch this)", True)
+    check("...and it does NOT retry — one call to fetch(), not up to "
+          f"{amd.MAX_TRANSPORT_ATTEMPTS}", len(calls) == 1, str(len(calls)))
+except amd.AccurateModelDownloadError as e:
+    check("cancellation propagates out of _fetch_with_fallback", False,
+          f"got reclassified into a generic error instead: {e}")
+
+
+print("\n=== 25. Cancel preserves completed chunks and a later run resumes "
+      "(FAKE_HUB — proves the LOGIC exhaustively and fast) ===")
+reset_managed()
+cancel_target = amd.managed_model_dir()
+cancel_chunk_dir = os.path.join(cancel_target, amd.REPO_CHUNK_DIR)
+os.makedirs(cancel_chunk_dir, exist_ok=True)
+
+# Simulate: two chunks already complete from an earlier attempt (as if a
+# previous run had gotten this far), two still missing.
+already_done = {MANIFEST["chunks"][0]["name"], MANIFEST["chunks"][1]["name"]}
+for name in already_done:
+    shutil.copyfile(os.path.join(FAKE_HUB, amd.REPO_CHUNK_DIR, name),
+                    os.path.join(cancel_chunk_dir, name))
+
+fetched_this_run = []
+cancel_after = 1  # cancel once the loop has fetched this many NEW chunks
+cancel_event_25 = threading.Event()
+
+
+def hf_file_cancel_after_one(repo_id, revision, filename, target_dir, tqdm_class=None):
+    # Reuses the exact fake_hf_file plumbing from section 15/17 (serves chunks
+    # out of FAKE_HUB), just wrapped so it can also flip the cancel switch.
+    fetched_this_run.append(filename)
+    if len(fetched_this_run) >= cancel_after:
+        cancel_event_25.set()
+    return fake_hf_file(repo_id, revision, filename, target_dir, tqdm_class)
+amd._hf_file = hf_file_cancel_after_one
+try:
+    tracker = amd._ByteTracker(MANIFEST["total_bytes"])
+    try:
+        amd._fetch_chunks("x/y", "rev", MANIFEST, cancel_target, cancel_chunk_dir,
+                          set(already_done), None, tracker, cancel_event=cancel_event_25)
+        check("cancelling mid-fetch raises", False, "no exception")
+    except amd.AccurateModelDownloadCancelled:
+        check("cancelling mid-fetch raises AccurateModelDownloadCancelled", True)
+finally:
+    amd._hf_file = real_hf_file
+
+on_disk_after_cancel = set(os.listdir(cancel_chunk_dir))
+check("the 2 chunks from BEFORE this run are still there",
+      already_done <= on_disk_after_cancel, str(on_disk_after_cancel))
+check("exactly 1 NEW chunk was fetched before the cancel took effect "
+      "(the checkpoint is between chunks, not mid-download of one)",
+      len(fetched_this_run) == 1, str(fetched_this_run))
+check("that newly-fetched chunk is ALSO still on disk — cancelling never "
+      "deletes a chunk that finished downloading, only skips the next one",
+      len(on_disk_after_cancel) == 3, str(on_disk_after_cancel))
+
+# Now "resume": call again with no cancellation. Only the 2 still-missing
+# chunks should be fetched — not the 3 already on disk.
+fetched_second_run = []
+
+
+def hf_file_record(repo_id, revision, filename, target_dir, tqdm_class=None):
+    fetched_second_run.append(filename)
+    return fake_hf_file(repo_id, revision, filename, target_dir, tqdm_class)
+
+
+amd._hf_file = hf_file_record
+try:
+    present = amd._existing_chunks(cancel_chunk_dir, MANIFEST)
+    check("resume correctly detects the 3 chunks left behind by the cancel",
+          len(present) == 3, str(present))
+    got = amd._fetch_chunks("x/y", "rev", MANIFEST, cancel_target, cancel_chunk_dir,
+                            present, None, amd._ByteTracker(MANIFEST["total_bytes"]))
+    check("resume finishes with all 4 chunks present", len(got) == 4, str(got))
+    check("resume only fetched the 1 chunk that was genuinely still missing "
+          "— not the 3 that survived the cancel",
+          len(fetched_second_run) == 1, str(fetched_second_run))
+finally:
+    amd._hf_file = real_hf_file
+
+
+print("\n=== 26. Cancellation against the REAL Hub, mid-transfer "
+      "(not mocked — proves the MECHANISM, not just the logic) ===")
+# Sections 24/25 prove the logic exhaustively against a fake I/O boundary,
+# which is fast and deterministic but never actually asks: does setting
+# cancel_event really interrupt a real, in-flight huggingface_hub download
+# against our real production repo? This section spends a few real seconds of
+# real network time to answer that directly, rather than assuming the fake
+# boundary generalises.
+reset_managed()
+real_target = amd.managed_model_dir()
+real_chunk_dir = real_target / amd.REPO_CHUNK_DIR
+real_chunk_dir.mkdir(parents=True, exist_ok=True)
+
+real_cancel_event = threading.Event()
+progress_seen = []
+
+
+def cancel_on_first_progress(p):
+    progress_seen.append(p)
+    if p.phase == "downloading" and p.downloaded_bytes > 0:
+        real_cancel_event.set()  # cancel as soon as real bytes are confirmed moving
+
+
+t0 = time.time()
+try:
+    amd._download_chunked(
+        amd.REPO_ID, amd.CHUNKED_REVISION, real_target,
+        cancel_on_first_progress, 4, cancel_event=real_cancel_event,
+    )
+    check("a real chunked download was cancelled mid-transfer", False,
+          "no exception — either it finished (network too fast?) or cancellation "
+          "silently did nothing")
+except amd.AccurateModelDownloadCancelled:
+    elapsed = time.time() - t0
+    check("a real chunked download was cancelled mid-transfer", True,
+          f"stopped after {elapsed:.1f}s of real network time")
+    check("...having actually observed real progress from the real Hub first",
+          any(p.downloaded_bytes > 0 for p in progress_seen),
+          f"{len(progress_seen)} samples")
+except amd.AccurateModelDownloadError as e:
+    check("a real chunked download was cancelled mid-transfer", False,
+          f"got a real network/transport error instead (unrelated to cancellation): {e}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
