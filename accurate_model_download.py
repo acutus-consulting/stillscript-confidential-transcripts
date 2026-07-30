@@ -674,6 +674,34 @@ def _write_stamp(model_dir, repo_id, revision, guard_report, total_bytes):
 EQUIVALENT_REVISIONS = frozenset({REVISION, CHUNKED_REVISION})
 
 
+def describe_verified_model(model_dir):
+    """Translate a directory's completion stamp into the model-identity facts
+    masterplan 2.6's provenance footer needs: which repo, which pinned
+    revision, and which on-disk layout (chunked vs. single) that revision
+    corresponds to.
+
+    Returns None when there is no stamp — e.g. STILLSCRIPT_ACCURATE_MODEL_DIR
+    points somewhere this module never downloaded to, so there is nothing on
+    record to vouch for a specific revision/layout.
+    """
+    stamp = read_stamp(model_dir)
+    if not stamp:
+        return None
+    revision = stamp.get("revision")
+    if revision == CHUNKED_REVISION:
+        layout = "chunked"
+    elif revision == REVISION:
+        layout = "single"
+    else:
+        layout = "unknown"
+    return {
+        "repo_id": stamp.get("repo_id", REPO_ID),
+        "revision": revision,
+        "layout": layout,
+        "full_verification": stamp.get("full_verification"),
+    }
+
+
 def is_verified_download(model_dir, repo_id=REPO_ID, revision=None):
     """True when this directory holds a completed, fully-verified download.
 

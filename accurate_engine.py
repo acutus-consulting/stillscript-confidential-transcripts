@@ -70,9 +70,9 @@ MODEL_DIR_ENV_VAR = "STILLSCRIPT_ACCURATE_MODEL_DIR"
 # Files from_pretrained() needs before it will load anything.
 _REQUIRED_MODEL_FILES = ("config.json", "model.safetensors", "preprocessor_config.json")
 
-# Human-readable engine name. The provenance block currently records the Fast
-# label only; wiring this in (with the adapter revision SHA) is masterplan
-# item 2.6, deliberately not done here.
+# Human-readable engine name, recorded in the provenance block alongside the
+# model ID / revision / layout / guard fields _describe_model_provenance()
+# adds (masterplan 2.6).
 ACCURATE_ENGINE_LABEL = "StillScript Accurate — Whisper large-v3 + Afrikaans adapter"
 
 # This engine is fine-tuned for Afrikaans. If a caller does not specify a
@@ -143,14 +143,21 @@ def check_model_available(model_dir=None):
 
 
 def load_engine(model_dir=None):
-    """Load (and cache) the processor + model. Returns (processor, model, dir).
+    """Load (and cache) the processor + model.
+
+    Returns (processor, model, dir, guard_report). guard_report is the result
+    of the adapter-guard check below — cached alongside the model (masterplan
+    2.6) so every transcription in a session, not just the first, can report
+    which verification mode (probe/full) actually passed for the model it
+    used.
 
     Raises AccurateEngineUnavailable if the dependencies or the model files
     are not present, rather than falling back to anything else.
     """
     resolved = resolve_model_dir(model_dir)
     if resolved in _engine_cache:
-        return (*_engine_cache[resolved], resolved)
+        processor, model, guard_report = _engine_cache[resolved]
+        return processor, model, resolved, guard_report
 
     ok, detail = check_model_available(resolved)
     if not ok:
@@ -204,8 +211,8 @@ def load_engine(model_dir=None):
         raise
     model.eval()
 
-    _engine_cache[resolved] = (processor, model)
-    return processor, model, resolved
+    _engine_cache[resolved] = (processor, model, guard_report)
+    return processor, model, resolved, guard_report
 
 
 def _looks_like_out_of_memory(exc):
@@ -258,7 +265,7 @@ def transcribe(
     import torch
     import librosa
 
-    processor, model, resolved = load_engine(model_dir)
+    processor, model, resolved, guard_report = load_engine(model_dir)
 
     if language is None:
         # Don't quietly auto-detect on an Afrikaans-specialised merge.
@@ -301,10 +308,57 @@ def transcribe(
     with torch.no_grad():
         output = model.generate(**inputs, **generate_kwargs)
 
-    return _build_result(processor, output, language, duration)
+    return _build_result(processor, output, language, duration, resolved, guard_report)
 
 
-def _build_result(processor, output, language, duration):
+def _describe_model_provenance(resolved, guard_report):
+    """What backs this specific transcription, for the audit footer
+    (masterplan 2.6). Combines two DIFFERENT verification events, both real
+    and both worth recording distinctly rather than conflated:
+
+      * The download-time stamp (accurate_model_download.py), if `resolved`
+        is a managed download directory — Waves 2.1a.2/2.1a.3 always verify
+        in FULL mode at download time, unconditionally, regardless of this
+        session's own guard mode. Absent for a directory the user pointed
+        STILLSCRIPT_ACCURATE_MODEL_DIR at directly (never downloaded by this
+        app, so never stamped) — in that case model_revision/model_layout
+        come back None rather than a guessed value.
+      * This SESSION's own load-time guard result (guard_report, from
+        load_engine()'s verify_merged_model() call) — probe mode by default
+        (masterplan 2.2a), full mode only if STILLSCRIPT_ACCURATE_FULL_VERIFY
+        is set. This is the check that actually gated THIS load, so it is
+        reported as "guard_verification" regardless of what the stamp says.
+
+    accurate_model_download is imported lazily here, matching this module's
+    own convention of keeping anything not needed for the core generate()
+    path out of load time — read_stamp() itself is cheap (stdlib only), but
+    there is no reason for accurate_engine to import a download-oriented
+    module until a result actually needs describing.
+    """
+    if guard_report.get("full"):
+        guard_label = (f"Full ({guard_report.get('tensors_hashed', '?')} of "
+                       f"{guard_report.get('tensor_count', '?')} tensors hashed)")
+    else:
+        guard_label = f"Probe ({guard_report.get('probes_checked', '?')} sample tensors)"
+
+    import accurate_model_download as amd
+    info = amd.describe_verified_model(resolved)
+    if info:
+        return {
+            "model_id": info["repo_id"],
+            "model_revision": info["revision"],
+            "model_layout": info["layout"],
+            "guard_verification": guard_label,
+        }
+    return {
+        "model_id": amd.REPO_ID,
+        "model_revision": None,
+        "model_layout": None,
+        "guard_verification": guard_label,
+    }
+
+
+def _build_result(processor, output, language, duration, resolved, guard_report):
     """Normalise generate()'s output into the Fast seam's result shape."""
     # With return_segments=True, generate() returns a dict:
     #   {"sequences": tensor, "segments": [[seg, seg, ...]]}   (outer list = batch)
@@ -336,4 +390,5 @@ def _build_result(processor, output, language, duration):
         "segments": segments,
         "language": language,
         "engine": ACCURATE_ENGINE_LABEL,
+        **_describe_model_provenance(resolved, guard_report),
     }

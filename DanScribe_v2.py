@@ -169,9 +169,9 @@ FAST_MODE_MODEL = "medium"
 # Phase 3 adds the accurate-mode engine (large-v3 + adapter revision SHA).
 FAST_MODE_ENGINE_LABEL = "DanScribe Fast — Whisper Medium"
 
-# Third-party attribution shown in the "About" (Credits) dialog. Phase 3 appends
-# the fine-tuned Afrikaans model + dataset entry (CC-BY-4.0) — one more dict,
-# no UI change.
+# Third-party attribution shown in the "About" (Credits) dialog. Masterplan
+# 2.7 appends the fine-tuned Afrikaans model + dataset entries (CC-BY-4.0)
+# below — same list, same CreditsWindow, no UI change.
 CREDITS = [
     {
         "name": "OpenAI Whisper",
@@ -179,6 +179,37 @@ CREDITS = [
                    'Large-Scale Weak Supervision", arXiv:2212.04356'),
         "license": "Apache License 2.0",
         "url": "https://arxiv.org/abs/2212.04356",
+    },
+    # Masterplan 2.7. Attribution language and BibTeX taken verbatim from the
+    # published HF model card (huggingface.co/DanieClar/stillscript-whisper-
+    # large-v3-afrikaans, License/Attribution/Citation section) rather than
+    # paraphrased, so this entry and the model card cannot drift apart. The
+    # Afrikaans adapter is CC-BY-4.0; Accurate mode's merged model is only
+    # the base model's weights (openai/whisper-large-v3, Apache-2.0, credited
+    # above via the Whisper entry) plus this adapter — "nothing was retrained;
+    # the only operation performed was merging the published adapter into the
+    # published base weights", per the model card's own key statement. This
+    # entry covers both the required creator/title/source/license attribution
+    # and the "indicate if changes were made" requirement CC-BY-4.0 also asks
+    # for, and applies regardless of which HF revision/layout (single-file vs
+    # chunked) a given install downloaded, since both carry the same merge.
+    {
+        "name": "Whisper Large V3 Afrikaans (adapter)",
+        "detail": (
+            'André Oosthuizen, "Whisper Large V3 Afrikaans", 2025, HuggingFace. '
+            "Merged into StillScript's Accurate-mode model without retraining — "
+            "the only operation performed was merging this published adapter "
+            "into the published openai/whisper-large-v3 base weights."
+        ),
+        "license": "CC-BY-4.0",
+        "url": "https://huggingface.co/andreoosthuizen/whisper-large-v3-afrikaans",
+    },
+    {
+        "name": "afrikaans-30s (training dataset)",
+        "detail": ("André Oosthuizen — training data used for the Whisper "
+                   "Large V3 Afrikaans adapter above."),
+        "license": "CC-BY-4.0",
+        "url": "https://huggingface.co/datasets/andreoosthuizen/afrikaans-30s",
     },
 ]
 
@@ -303,14 +334,15 @@ def transcribe_audio_accurate(path, *, language, task, model_dir=None, **engine_
     )
 
 
-def build_provenance(*, mode, language_label, task, diarized, num_speakers=None, engine=None):
+def build_provenance(*, mode, language_label, task, diarized, num_speakers=None, engine=None,
+                     model_id=None, model_revision=None, model_layout=None,
+                     guard_verification=None):
     """Describe which engine produced a transcript, for the audit footer.
 
-    Returns a plain dict so Phase 3 can extend it (adapter revision SHA,
-    dataset version, etc.) without any caller changing — the same seam
-    principle as transcribe_audio(). Callers pass display-level values
-    (the language *label* the user picked, not the ISO code) so the footer
-    reads the way the operator set it up.
+    Returns a plain dict so callers can extend it without any other caller
+    changing — the same seam principle as transcribe_audio(). Callers pass
+    display-level values (the language *label* the user picked, not the ISO
+    code) so the footer reads the way the operator set it up.
 
     `engine` defaults to FAST_MODE_ENGINE_LABEL so the existing Fast-mode call
     site is unaffected. Accurate mode passes its own engine's label explicitly
@@ -319,12 +351,17 @@ def build_provenance(*, mode, language_label, task, diarized, num_speakers=None,
     import accurate_engine just to get this string. Getting this wrong would
     mean an Accurate-mode transcript's audit footer claiming it was produced by
     Fast mode instead — a provenance product exists specifically to prevent
-    that kind of quiet misattribution, so this is a correctness fix landing
-    alongside Wave 2.3, not the richer 2.6 extension (model-ID / adapter
-    revision SHA), which remains separate and untouched.
+    that kind of quiet misattribution.
+
+    model_id / model_revision / model_layout / guard_verification (masterplan
+    2.6) are Accurate-mode-only and additive: they default to None and are
+    only included in the returned dict when a caller actually passes them, so
+    the Fast-mode call site (which never passes them) gets a provenance dict
+    identical to before this wave — and format_provenance_lines() below only
+    ever renders lines for the ones that are present.
     """
     from datetime import datetime
-    return {
+    provenance = {
         "engine": engine or FAST_MODE_ENGINE_LABEL,
         "mode": mode,
         "language": language_label,
@@ -333,6 +370,15 @@ def build_provenance(*, mode, language_label, task, diarized, num_speakers=None,
         "num_speakers": num_speakers if diarized else None,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if model_id is not None:
+        provenance["model_id"] = model_id
+    if model_revision is not None:
+        provenance["model_revision"] = model_revision
+    if model_layout is not None:
+        provenance["model_layout"] = model_layout
+    if guard_verification is not None:
+        provenance["guard_verification"] = guard_verification
+    return provenance
 
 
 def format_provenance_lines(provenance):
@@ -344,14 +390,26 @@ def format_provenance_lines(provenance):
         diar_label = f"Yes (up to {spk} speakers)" if spk else "Yes"
     else:
         diar_label = "No"
-    return [
+    lines = [
         f"Engine: {provenance.get('engine')}",
         f"Mode: {provenance.get('mode')}",
         f"Language setting: {provenance.get('language')}",
         f"Task: {task_label}",
         f"Speaker identification: {diar_label}",
-        f"Generated: {provenance.get('timestamp')}",
     ]
+    # Accurate-mode-only lines (masterplan 2.6). Only appended when present,
+    # so Fast-mode's footer is unchanged — build_provenance()'s Fast-mode
+    # call site never passes these keys, so they are simply absent here.
+    if provenance.get("model_id"):
+        lines.append(f"Model: {provenance['model_id']}")
+    if provenance.get("model_revision"):
+        lines.append(f"Model revision: {provenance['model_revision']}")
+    if provenance.get("model_layout"):
+        lines.append(f"Download layout: {provenance['model_layout']}")
+    if provenance.get("guard_verification"):
+        lines.append(f"Guard verification: {provenance['guard_verification']}")
+    lines.append(f"Generated: {provenance.get('timestamp')}")
+    return lines
 
 
 # Below this duration, _diarize() uses the whole-file librosa.load path,
@@ -442,9 +500,9 @@ class SettingsWindow(ctk.CTkToplevel):
 class CreditsWindow(ctk.CTkToplevel):
     """Attribution surface for the models/datasets DanScribe builds on.
 
-    Driven entirely by the module-level CREDITS list — Phase 3 adds the
-    fine-tuned Afrikaans model + dataset (CC-BY-4.0) by appending one dict,
-    with no change to this window.
+    Driven entirely by the module-level CREDITS list — masterplan 2.7 added
+    the fine-tuned Afrikaans model + dataset entries (CC-BY-4.0) by appending
+    two dicts, with no change to this window.
     """
     def __init__(self, parent):
         super().__init__(parent)
@@ -1241,6 +1299,13 @@ class DanScribeApp(ctk.CTk):
                 # label (ACCURATE_ENGINE_LABEL) — reuse it rather than import
                 # accurate_engine here just for a string.
                 engine=result.get("engine"),
+                # Masterplan 2.6 — likewise sourced from the result dict, not
+                # re-derived here, so accurate_engine stays the single source
+                # of truth for what backs a given transcription.
+                model_id=result.get("model_id"),
+                model_revision=result.get("model_revision"),
+                model_layout=result.get("model_layout"),
+                guard_verification=result.get("guard_verification"),
             )
             output_path = self._save_transcript(
                 transcript_text, file_path, provenance=provenance
