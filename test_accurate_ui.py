@@ -32,8 +32,10 @@ WHAT IS REAL vs MOCKED, section by section (each section says so again inline):
   5     Subsequent activation again, this time with diarization ON, IF the
         same real downloaded model is present: the real ensure_accurate_model()
         short-circuit, real self._diarize() running against the real clip
-        (cheap — librosa/sklearn, no torch), but transcribe_audio_accurate()
-        is mocked, same as section 4. A real transformers.generate() call was
+        (masterplan 2.12: this is now the pyannote neural pipeline, ~33s on the
+        30s clip plus a one-time model download — it is no longer the cheap
+        librosa/sklearn pass this note used to describe), but
+        transcribe_audio_accurate() is mocked, same as section 4. A real transformers.generate() call was
         tried here first and dropped: CPU inference timing proved unpredictable
         enough to blow past a 600s test timeout and then crash the process on
         teardown (a daemon thread still inside native torch code when the
@@ -540,9 +542,16 @@ def test_sequence():
     # remaining job is the one path that leaves genuinely untested: does the
     # Accurate-mode branch correctly call self._diarize() and thread real
     # speaker labels through to the saved transcript, the same way Fast mode
-    # already does. _diarize() itself runs for real here — it's cheap
-    # (librosa/sklearn on a 30s clip, no torch, no generate()) — only the
-    # engine call that would produce the segments is mocked.
+    # already does. _diarize() itself runs for real here — only the engine call
+    # that would produce the segments is mocked.
+    #
+    # NOTE (masterplan 2.12): _diarize() is no longer cheap. It used to be
+    # librosa/sklearn on a 30s clip with no torch; it now runs the pyannote
+    # neural pipeline, measured at ~33s on this same 30s clip, plus a one-time
+    # ~50s model download on a machine that has never run it. The timeout below
+    # was raised from 60s for exactly that reason — if this section starts
+    # timing out again, check whether the diarization model is present before
+    # assuming the UI wiring broke.
     if not real_model_ready:
         print("  [SKIP] same reason as section 4 — no real model on this machine.")
     else:
@@ -575,7 +584,7 @@ def test_sequence():
             reset_mb()
             start_accurate_run(BENCH_CLIP)
             ok = (yield from pump_until_gen(lambda: len(mb_calls["showinfo"]) >= 1
-                                            or mb_calls["showerror"], timeout=60))
+                                            or mb_calls["showerror"], timeout=300))
             check("a subsequent activation with diarization ON completes "
                   "(mocked engine, real ensure_accurate_model() short-circuit, "
                   "real _diarize())",

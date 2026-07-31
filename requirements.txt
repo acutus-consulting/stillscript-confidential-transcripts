@@ -34,8 +34,36 @@ keyring==24.3.1
 
 # Speaker identification (diarization) — optional.
 # If these are absent the app falls back to pause-based speaker detection.
+#
+# pyannote.audio replaced the old pitch/MFCC + fixed-k KMeans backend in
+# masterplan 2.12, after that backend was measured collapsing four confirmed
+# distinct voices into a single speaker. It must be 4.x, NOT 3.x: 3.x needs
+# huggingface_hub<1.0 (we pin 1.24.0 deliberately, see the note below) and
+# torchaudio.AudioMetaData, which no longer exists in the torchaudio that ships
+# with torch 2.13.0+cpu. 4.0.7 was verified running on this file's exact pinned
+# set — numpy 2.4.6, scipy 1.17.0, huggingface_hub 1.24.0, torch 2.13.0+cpu —
+# not merely assumed compatible.
+#
+# NOTE: pyannote 4.x lists torchcodec as a dependency for its own audio
+# decoding, but that wheel is linked against CUDA and will not load on a
+# CPU-only install. diarization_engine.py therefore decodes with the bundled
+# ffmpeg and hands pyannote an in-memory waveform instead. That is deliberate
+# and documented there — do not "fix" it by passing file paths.
+#
+# ⚠ torchaudio MUST be installed from the CPU-only index, exactly like torch and
+# for exactly the same reason — it is NOT listed here, for the same reason torch
+# is not. pyannote.audio depends on torchaudio, so a plain
+# `pip install pyannote.audio` pulls the DEFAULT (CUDA) build from PyPI, whose
+# native `_torchaudio.abi3.so` then fails to load against our CPU-only torch
+# with "libcudart.so.13: cannot open shared object file". That is not a
+# theoretical hazard: it happened during 2.12's integration and broke three
+# previously-green test suites (guard, memory, engine) until torchaudio was
+# reinstalled from the CPU index. Install it alongside torch:
+#     pip install torch==2.13.0 torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Verify with: python -c "import torchaudio" — it raises loudly if wrong.
 librosa==0.11.0
 scikit-learn==1.9.0
+pyannote.audio==4.0.7
 
 # scipy pinned explicitly — it was the invisible constraint behind the whole
 # numpy drift. librosa and scikit-learn both depend on it, but nothing pinned it,

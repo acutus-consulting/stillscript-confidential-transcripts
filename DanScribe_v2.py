@@ -211,6 +211,28 @@ CREDITS = [
         "license": "CC-BY-4.0",
         "url": "https://huggingface.co/datasets/andreoosthuizen/afrikaans-30s",
     },
+    # Masterplan 2.12. Same CC-BY-4.0 attribution shape as the two entries
+    # above: title (name), author + modification notice (detail), source (url),
+    # licence (license). Wording and the cited work are taken from the upstream
+    # model card rather than paraphrased. The pipeline is redistributed
+    # unmodified from StillScript's own mirror, because the upstream repository
+    # is gated and a shipped desktop app cannot make each end user accept its
+    # conditions; CC-BY-4.0 expressly permits that redistribution.
+    {
+        "name": "pyannote speaker-diarization-community-1",
+        "detail": (
+            "Hervé Bredin and the pyannote.audio team — the speaker-"
+            "identification pipeline behind \"Identify different speakers\". "
+            "Redistributed unmodified from StillScript's mirror; no "
+            "retraining, fine-tuning or conversion was performed. Cites "
+            "Plaquet & Bredin, \"Powerset multi-class cross entropy loss for "
+            "neural speaker diarization\", Interspeech 2023, and Bredin, "
+            "\"pyannote.audio 2.1 speaker diarization pipeline\", Interspeech "
+            "2023."
+        ),
+        "license": "CC-BY-4.0",
+        "url": "https://huggingface.co/pyannote/speaker-diarization-community-1",
+    },
 ]
 
 # Model cache — prevents reloading every time
@@ -420,6 +442,18 @@ def format_provenance_lines(provenance):
 # files), so _diarize() switches to the decode-once-to-temp-WAV path, which
 # can shift a speaker label by a small margin — acceptable on long
 # recordings where individual turn boundaries aren't scrutinized.
+# ⚠ UNUSED as of masterplan 2.12 — kept, not deleted, deliberately.
+#
+# This gate and _probe_audio_duration_seconds() below now have NO callers. They
+# existed to bound memory while extracting one feature vector per Whisper
+# segment: short files loaded whole via librosa.load, long ones decoded once to
+# a temp WAV and seeked per segment. The pyannote backend does no per-segment
+# feature extraction at all, so there is nothing left to gate — the branch was
+# not "removed as a simplification", it lost its subject.
+#
+# Removing these two, and the frozen-app PATH note at the top of this file that
+# mentions them, is a tidy-up that was explicitly scoped OUT of 2.12 (backend
+# swap only). Do not assume the gate is live: it is not.
 DIARIZE_LONG_FILE_THRESHOLD_SEC = 20 * 60  # 20 minutes
 
 
@@ -1337,187 +1371,55 @@ class DanScribeApp(ctk.CTk):
     # ── DIARIZATION ─────────────────────────
 
     def _diarize(self, whisper_result, max_speakers=4, audio_path=None):
-        """
-        Enhanced speaker detection using pitch (F0) analysis via librosa.
-        Each Whisper segment's audio is analysed for average pitch.
-        Segments are then clustered into speaker groups using K-Means.
-        Falls back to pause-based detection if librosa is unavailable.
+        """Attach speaker labels to a transcript.
+
+        Returns exactly the shape it always has — an ordered list of
+        {"speaker": "Speaker N", "text": ...} with consecutive same-speaker
+        turns merged — so _segments_to_text(), the name-assignment dialog and
+        both exporters are unaffected by what happens inside.
+
+        The speaker timeline comes from pyannote (diarization_engine), computed
+        over the raw audio and NOT from Whisper's segment boundaries. That
+        distinction is the entire point of masterplan 2.12: the old backend
+        averaged one feature vector per ~30s Whisper segment, which made a
+        speaker change inside a segment unrepresentable and collapsed a
+        confirmed four-voice stretch into a single speaker.
+
+        Falls back to the pause-based heuristic below if diarization is
+        unavailable — logged at ERROR, not warning, because silently shipping a
+        near-one-speaker transcript is precisely the failure this product
+        cannot afford.
         """
         segments = whisper_result.get("segments", [])
         if not segments:
             return [{"speaker": "Speaker 1", "text": whisper_result["text"]}]
 
-        # ── Try pitch-based clustering ───────────────────
         try:
-            import librosa
-            import numpy as np
-            from sklearn.cluster import KMeans
-            from sklearn.preprocessing import StandardScaler
-
             if audio_path is None:
-                raise ValueError("No audio path provided")
+                raise ValueError("no audio path provided")
 
-            sr = 16000
+            import diarization_engine
 
-            # Length-gated decode path (see DIARIZE_LONG_FILE_THRESHOLD_SEC).
-            # If the duration can't be determined, default to the whole-file
-            # path — the byte-identical, previously-shipped behaviour.
-            duration_sec = _probe_audio_duration_seconds(audio_path)
-            use_temp_wav_path = (
-                duration_sec is not None and duration_sec >= DIARIZE_LONG_FILE_THRESHOLD_SEC
-            )
+            turns = diarization_engine.diarize(audio_path, max_speakers=max_speakers)
+            if not turns:
+                raise ValueError("diarization returned no speaker turns")
 
-            features = []
-            valid_indices = []
-
-            if use_temp_wav_path:
-                # Decode once to a temp 16 kHz mono WAV, then seek per-segment
-                # from that file instead of holding the whole decoded signal
-                # in RAM. librosa.load() of a multi-hour recording peaked at
-                # several GB (the deposition case); reading only each
-                # segment's samples on demand keeps peak memory roughly
-                # constant in file duration. The temp file is always removed
-                # in the finally below. Note: this decode path (ffmpeg)
-                # differs slightly from librosa/audioread, so feature values
-                # — and therefore speaker labels — are not promised
-                # bit-for-bit identical to the whole-file path below.
-                import soundfile as sf
-                import subprocess, tempfile
-
-                tmp_fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="danscribe_diar_")
-                os.close(tmp_fd)
-                try:
-                    subprocess.run(
-                        ["ffmpeg", "-nostdin", "-y", "-i", audio_path,
-                         "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", tmp_wav],
-                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
-
-                    with sf.SoundFile(tmp_wav) as snd:
-                        total_frames = len(snd)
-
-                        for i, seg in enumerate(segments):
-                            text = seg.get("text", "").strip()
-                            if not text:
-                                continue
-
-                            # Clamp to file bounds so the requested sample range
-                            # matches the whole-file y[start:end] numpy-slice
-                            # semantics exactly (only the sample *values*
-                            # change, not which segments qualify).
-                            start_sample = max(0, min(int(seg.get("start", 0) * sr), total_frames))
-                            end_sample   = max(0, min(int(seg.get("end",   0) * sr), total_frames))
-                            frames = end_sample - start_sample
-
-                            if frames < sr * 0.3:   # skip very short chunks
-                                continue
-
-                            snd.seek(start_sample)
-                            chunk = snd.read(frames, dtype="float32")
-
-                            if len(chunk) < sr * 0.3:   # skip very short chunks
-                                continue
-
-                            # Extract pitch (fundamental frequency) using YIN algorithm
-                            f0 = librosa.yin(chunk, fmin=60, fmax=400, sr=sr)
-                            f0_voiced = f0[f0 > 0]
-
-                            if len(f0_voiced) == 0:
-                                # Silence/unvoiced — use neutral feature
-                                mean_pitch = 0.0
-                                std_pitch  = 0.0
-                            else:
-                                mean_pitch = float(np.mean(f0_voiced))
-                                std_pitch  = float(np.std(f0_voiced))
-
-                            # Also use MFCCs for timbre (voice quality beyond just pitch)
-                            mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=5)
-                            mfcc_mean = np.mean(mfcc, axis=1)
-
-                            feature_vec = [mean_pitch, std_pitch] + list(mfcc_mean)
-                            features.append(feature_vec)
-                            valid_indices.append(i)
-                finally:
-                    try:
-                        os.remove(tmp_wav)
-                    except OSError:
-                        pass
-            else:
-                # Load full audio once
-                y, _ = librosa.load(audio_path, sr=sr, mono=True)
-
-                for i, seg in enumerate(segments):
-                    text = seg.get("text", "").strip()
-                    if not text:
-                        continue
-
-                    start_sample = int(seg.get("start", 0) * sr)
-                    end_sample   = int(seg.get("end",   0) * sr)
-                    chunk = y[start_sample:end_sample]
-
-                    if len(chunk) < sr * 0.3:   # skip very short chunks
-                        continue
-
-                    # Extract pitch (fundamental frequency) using YIN algorithm
-                    f0 = librosa.yin(chunk, fmin=60, fmax=400, sr=sr)
-                    f0_voiced = f0[f0 > 0]
-
-                    if len(f0_voiced) == 0:
-                        # Silence/unvoiced — use neutral feature
-                        mean_pitch = 0.0
-                        std_pitch  = 0.0
-                    else:
-                        mean_pitch = float(np.mean(f0_voiced))
-                        std_pitch  = float(np.std(f0_voiced))
-
-                    # Also use MFCCs for timbre (voice quality beyond just pitch)
-                    mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=5)
-                    mfcc_mean = np.mean(mfcc, axis=1)
-
-                    feature_vec = [mean_pitch, std_pitch] + list(mfcc_mean)
-                    features.append(feature_vec)
-                    valid_indices.append(i)
-
-            if len(features) < max_speakers:
-                raise ValueError("Not enough segments for clustering")
-
-            # Cluster segments into speaker groups
-            X = StandardScaler().fit_transform(features)
-            km = KMeans(n_clusters=max_speakers, random_state=42, n_init=10)
-            labels = km.fit_predict(X)
-
-            # Map cluster labels to speaker numbers ordered by first appearance
-            cluster_to_speaker = {}
-            speaker_counter = 1
-            ordered_labels = []
-            for label in labels:
-                if label not in cluster_to_speaker:
-                    cluster_to_speaker[label] = speaker_counter
-                    speaker_counter += 1
-                ordered_labels.append(cluster_to_speaker[label])
-
-            # Build result — map valid_indices back to segments
-            label_map = {valid_indices[j]: ordered_labels[j] for j in range(len(valid_indices))}
-
-            result = []
-            for i, seg in enumerate(segments):
-                text = seg.get("text", "").strip()
-                if not text:
-                    continue
-                spk_num = label_map.get(i, 1)
-                speaker_key = f"Speaker {spk_num}"
-                if result and result[-1]["speaker"] == speaker_key:
-                    result[-1]["text"] += " " + text
-                else:
-                    result.append({"speaker": speaker_key, "text": text})
-
-            return result if result else [{"speaker": "Speaker 1", "text": whisper_result["text"]}]
+            # Referenced via the class, not self. _diarize() has always been
+            # callable with an unbound/None self — the existing test harnesses
+            # do exactly that — and _attach_speakers is a @staticmethod, so
+            # going through self would silently reintroduce an instance
+            # requirement and turn every such call into a fallback.
+            labelled = DanScribeApp._attach_speakers(segments, turns)
+            if not labelled:
+                raise ValueError("no text could be attached to the speaker timeline")
+            return labelled
 
         except ImportError as e:
-            logger.warning("Speaker-analysis libraries unavailable (%s); using pause-based fallback.", e)
+            logger.error("Speaker-diarization libraries unavailable (%s); falling back to "
+                         "pause-based detection, which is much less accurate.", e)
         except Exception as e:
-            logger.warning("Pitch-based diarization failed (%s); using pause-based fallback.", e)
-
+            logger.error("Speaker diarization failed (%s); falling back to pause-based "
+                         "detection, which is much less accurate.", e, exc_info=True)
         # ── Fallback: pause-based detection ─────────────
         pauses = []
         for i in range(1, len(segments)):
@@ -1543,6 +1445,82 @@ class DanScribeApp(ctk.CTk):
                 result.append({"speaker": speaker_key, "text": text})
 
         return result if result else [{"speaker": "Speaker 1", "text": whisper_result["text"]}]
+
+    @staticmethod
+    def _attach_speakers(segments, turns):
+        """Map a speaker timeline onto Whisper's segments.
+
+        `turns` is [(start, end, raw_speaker)], non-overlapping and time-sorted.
+
+        A Whisper long-form segment can be ~30s and span several speaker turns,
+        so a segment is split where the timeline says the speaker changed, and
+        its words are apportioned across the parts in proportion to how long
+        each speaker held the floor. Word-level timings would make this exact;
+        segment-level timings are all Whisper gives us here, so this is an
+        approximation — but a far better one than handing a whole 30s block to
+        whichever speaker happened to dominate it, which is what the old
+        backend effectively did.
+
+        Raw pyannote labels (SPEAKER_00, ...) are renumbered to "Speaker N" in
+        order of first appearance, matching the previous backend's convention
+        so the name-assignment dialog keeps working unchanged.
+        """
+        raw_to_label = {}
+        out = []
+
+        for seg in segments:
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+
+            s0 = float(seg.get("start", 0.0) or 0.0)
+            s1 = float(seg.get("end", s0) or s0)
+
+            overlaps = []
+            if s1 > s0:
+                for t0, t1, spk in turns:
+                    o = min(s1, t1) - max(s0, t0)
+                    if o > 0:
+                        overlaps.append((max(s0, t0), o, spk))
+                overlaps.sort(key=lambda x: x[0])
+
+            if not overlaps:
+                # No speech detected here by the diarizer (music, noise, a gap).
+                # Keep the text with whoever was last speaking rather than
+                # inventing a speaker or dropping the words.
+                carry = out[-1]["_raw"] if out else (turns[0][2] if turns else "SPEAKER_00")
+                parts = [(carry, text)]
+            elif len(overlaps) == 1:
+                parts = [(overlaps[0][2], text)]
+            else:
+                words = text.split()
+                total = sum(o for _, o, _ in overlaps)
+                parts, idx = [], 0
+                for n, (_, o, spk) in enumerate(overlaps):
+                    if n == len(overlaps) - 1:
+                        take = len(words) - idx
+                    else:
+                        take = int(round(len(words) * (o / total))) if total > 0 else 0
+                        take = max(0, min(take, len(words) - idx))
+                    chunk = words[idx:idx + take]
+                    idx += take
+                    if chunk:
+                        parts.append((spk, " ".join(chunk)))
+                if not parts:
+                    parts = [(overlaps[0][2], text)]
+
+            for spk, chunk in parts:
+                if spk not in raw_to_label:
+                    raw_to_label[spk] = f"Speaker {len(raw_to_label) + 1}"
+                label = raw_to_label[spk]
+                if out and out[-1]["speaker"] == label:
+                    out[-1]["text"] += " " + chunk
+                else:
+                    out.append({"speaker": label, "text": chunk, "_raw": spk})
+
+        for entry in out:
+            entry.pop("_raw", None)
+        return out
 
     def _segments_to_text(self, segments, name_map=None):
         lines = []
