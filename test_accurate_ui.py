@@ -203,6 +203,70 @@ check("the Accurate button's own label reads correctly",
 
 
 # ════════════════════════════════════════════════════════════════════════════
+print("\n=== 1b. Settings window: reproducibility control (masterplan 2.9) ===")
+# ════════════════════════════════════════════════════════════════════════════
+# Touches the REAL ~/.danscribe_config.json (SettingsWindow reads/writes it
+# directly, same as production) — snapshot and restore exactly, same care as
+# section 4's temperature-wiring test below.
+_had_config_1b = os.path.exists(ds.CONFIG_PATH)
+_original_config_raw_1b = None
+if _had_config_1b:
+    with open(ds.CONFIG_PATH) as f:
+        _original_config_raw_1b = f.read()
+try:
+    # No config file at all: must default to "Consistent" (masterplan 1.4),
+    # not crash or leave the control unset.
+    try:
+        os.remove(ds.CONFIG_PATH)
+    except OSError:
+        pass
+    check("with no config file at all, load_config() defaults reproducibility "
+          "to 'Consistent'", ds.load_config()["reproducibility"] == "Consistent")
+
+    settings1 = ds.SettingsWindow(app)
+    check("Settings window has the reproducibility control",
+          hasattr(settings1, "repro_var"))
+    check("...defaulting to 'Consistent' when no config exists yet",
+          settings1.repro_var.get() == "Consistent", settings1.repro_var.get())
+    settings1.destroy()
+
+    # A real, saved choice must be picked up as the NEW default the next time
+    # Settings is opened — not just held in one window instance's memory.
+    cfg = ds.load_config()
+    cfg["reproducibility"] = "Best effort"
+    ds.save_config(cfg)
+    settings2 = ds.SettingsWindow(app)
+    check("a previously-saved 'Best effort' choice is loaded as the control's "
+          "starting value on a fresh SettingsWindow (not hardcoded)",
+          settings2.repro_var.get() == "Best effort", settings2.repro_var.get())
+
+    # A real change + a real click of "Save Settings" must persist to disk —
+    # not just update the in-memory StringVar.
+    settings2.repro_var.set("Consistent")
+    settings2.save()  # real method call, same as a real button click runs
+    check("clicking Save Settings after changing the control writes the new "
+          "value to the real config file on disk",
+          ds.load_config()["reproducibility"] == "Consistent")
+
+    # Invalid/corrupted values must not propagate — same validation
+    # discipline as last_language already has.
+    with open(ds.CONFIG_PATH, "w") as f:
+        json.dump({"reproducibility": "Nonsense"}, f)
+    check("an invalid persisted value falls back to the 'Consistent' default, "
+          "same validation discipline as last_language",
+          ds.load_config()["reproducibility"] == "Consistent")
+finally:
+    if _had_config_1b:
+        with open(ds.CONFIG_PATH, "w") as f:
+            f.write(_original_config_raw_1b)
+    else:
+        try:
+            os.remove(ds.CONFIG_PATH)
+        except OSError:
+            pass
+
+
+# ════════════════════════════════════════════════════════════════════════════
 print("\n=== 2. Mode toggle changes state, both by calling the handler and by "
       "a real button click ===")
 # ════════════════════════════════════════════════════════════════════════════
@@ -540,7 +604,7 @@ def test_sequence():
         transcribe_calls_4 = []
 
         def mock_transcribe_4(path, *, language, task, model_dir=None, **kw):
-            transcribe_calls_4.append(model_dir)
+            transcribe_calls_4.append({"model_dir": model_dir, **kw})
             return {"text": "kort toets", "segments": [{"start": 0, "end": 1, "text": "kort toets"}],
                     "language": language, "engine": FAKE_ENGINE_LABEL}
 
@@ -555,8 +619,57 @@ def test_sequence():
             check("...and it used the REAL, already-verified model directory "
                   "(ensure_accurate_model() genuinely short-circuited under this "
                   "button's real call path, not assumed)",
-                  transcribe_calls_4 and transcribe_calls_4[0] == real_target_dir,
+                  transcribe_calls_4 and transcribe_calls_4[0]["model_dir"] == real_target_dir,
                   transcribe_calls_4)
+
+            # ── Masterplan 2.9: the reproducibility Settings choice must reach
+            #    this exact real call site as the correct temperature value —
+            #    not just render correctly in the Settings window. Touches the
+            #    REAL ~/.danscribe_config.json, so the original content (or its
+            #    absence) is snapshotted and restored below, not left dirty.
+            import accurate_engine
+            had_config = os.path.exists(ds.CONFIG_PATH)
+            original_config_raw = None
+            if had_config:
+                with open(ds.CONFIG_PATH) as f:
+                    original_config_raw = f.read()
+            try:
+                for choice, expected_temp in (
+                    ("Consistent", accurate_engine.TEMPERATURE_CONSISTENT),
+                    ("Best effort", accurate_engine.TEMPERATURE_BEST_EFFORT),
+                ):
+                    cfg = ds.load_config()
+                    cfg["reproducibility"] = choice
+                    ds.save_config(cfg)
+
+                    transcribe_calls_4.clear()
+                    reset_mb()
+                    start_accurate_run(BENCH_CLIP)
+                    ok = (yield from pump_until_gen(
+                        lambda: len(mb_calls["showinfo"]) >= 1, timeout=60))
+                    check(f"reproducibility='{choice}' completes a real run", ok)
+                    check(f"...and reaches transcribe_audio_accurate() with "
+                          f"temperature={expected_temp!r} (the real call site, "
+                          f"not just UI state)",
+                          transcribe_calls_4
+                          and transcribe_calls_4[0].get("temperature") == expected_temp,
+                          transcribe_calls_4)
+
+                    # Persistence across a simulated restart: load_config() is a
+                    # fresh disk read, so calling it again here IS the reload,
+                    # the same as a real app relaunch would do.
+                    check(f"'{choice}' persists across a simulated reload "
+                          f"(fresh load_config() re-read from disk)",
+                          ds.load_config()["reproducibility"] == choice)
+            finally:
+                if had_config:
+                    with open(ds.CONFIG_PATH, "w") as f:
+                        f.write(original_config_raw)
+                else:
+                    try:
+                        os.remove(ds.CONFIG_PATH)
+                    except OSError:
+                        pass
         finally:
             ds.transcribe_audio_accurate = real_transcribe
             ds.AccurateConsentDialog = _CapturingConsentDialog

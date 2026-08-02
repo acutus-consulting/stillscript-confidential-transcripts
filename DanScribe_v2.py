@@ -113,7 +113,11 @@ def _set_api_key(config, api_key):
 
 
 def load_config():
-    defaults = {"api_key": "", "last_language": "Auto-Detect"}
+    # "Consistent" default (masterplan 1.4/2.9): fits the audit/provenance
+    # promise Accurate mode is built around — a legal/clinical user should be
+    # able to re-run a recording and get the same transcript back. Fast mode
+    # never reads this key; it has no reproducibility choice of its own.
+    defaults = {"api_key": "", "last_language": "Auto-Detect", "reproducibility": "Consistent"}
     if not os.path.exists(CONFIG_PATH):
         return defaults
     try:
@@ -133,6 +137,8 @@ def load_config():
     # that mode selection replaces the model dropdown.)
     if merged.get("last_language") not in LANG_CODES:
         merged["last_language"] = defaults["last_language"]
+    if merged.get("reproducibility") not in ("Consistent", "Best effort"):
+        merged["reproducibility"] = defaults["reproducibility"]
     return merged
 
 def save_config(data):
@@ -198,6 +204,44 @@ ACCURATE_MODE_SCOPE_NOTE = (
     "Audio Language setting above. If your recording mixes in English or "
     "another language, expect it to run slower and carry a meaningfully "
     "higher chance of errors that need a full read-through, not a light one."
+)
+
+# Masterplan 1.4 / 2.9 — Settings copy for Accurate mode's reproducibility
+# choice. Deliberately does NOT frame "Consistent" as simply the safer
+# option: a real A/B test on one genuinely difficult recording (masterplan
+# 2.8) found temperature=0 ("Consistent") produced a LARGER and more
+# degenerate repetition-collapse than the fallback ladder ("Best effort")
+# on that same clip, even though pre-collapse quality was slightly better
+# and timing matched the ~3x baseline exactly. One data point, not a
+# settled rule — but "Consistent sounds safer" is not what was actually
+# measured, so the copy below says so plainly rather than defaulting to
+# the reassuring-sounding claim. Written to stand alone for Wave 5.2 (User
+# Manual), not just as an in-app aside.
+REPRODUCIBILITY_EXPLANATION = (
+    "Accurate mode can decode audio two ways. This changes speed and exact "
+    "repeatability — and, on genuinely difficult audio, it may also change "
+    "how a rare failure shows up if the model struggles. Neither option is "
+    "simply \"safer\"; read both before choosing.\n\n"
+    "Consistent (default): the same recording always produces the exact "
+    "same transcript, with no randomness, and runs at the documented ~3x-"
+    "real-time pace. On one real difficult test recording, though, "
+    "Consistent produced a MORE severe version of a rare failure (parts of "
+    "the transcript degenerating into repeated words) than Best effort did "
+    "on the same audio — so treat \"Consistent\" as meaning reproducible, "
+    "not automatically safer on hard audio.\n\n"
+    "Best effort: retries unclear parts of the audio before settling on an "
+    "answer, which can occasionally give a slightly different transcript "
+    "if you run the same recording twice, and runs substantially slower "
+    "(up to ~3x slower than Consistent was measured on one difficult "
+    "clip). In that same test, its retries partly avoided the worst form "
+    "of the failure above — but this is one data point, not a guarantee "
+    "it will do so on other recordings.\n\n"
+    "For most recordings — clear audio, one main speaker or language — "
+    "either option works well. For long, difficult, or heavily "
+    "overlapping/noisy recordings, consider trying both and comparing, "
+    "especially if a transcript looks like it starts repeating itself. "
+    "Always review the transcript against the audio for anything that "
+    "matters."
 )
 
 # Third-party attribution shown in the "About" (Credits) dialog. Masterplan
@@ -389,7 +433,7 @@ def transcribe_audio_accurate(path, *, language, task, model_dir=None, **engine_
 
 def build_provenance(*, mode, language_label, task, diarized, num_speakers=None, engine=None,
                      model_id=None, model_revision=None, model_layout=None,
-                     guard_verification=None):
+                     guard_verification=None, reproducibility=None):
     """Describe which engine produced a transcript, for the audit footer.
 
     Returns a plain dict so callers can extend it without any other caller
@@ -412,6 +456,10 @@ def build_provenance(*, mode, language_label, task, diarized, num_speakers=None,
     the Fast-mode call site (which never passes them) gets a provenance dict
     identical to before this wave — and format_provenance_lines() below only
     ever renders lines for the ones that are present.
+
+    reproducibility (masterplan 2.9) follows the exact same additive
+    convention, and for the same reason: Fast mode has no reproducibility
+    setting of its own, so its call site never passes this either.
     """
     from datetime import datetime
     provenance = {
@@ -431,6 +479,8 @@ def build_provenance(*, mode, language_label, task, diarized, num_speakers=None,
         provenance["model_layout"] = model_layout
     if guard_verification is not None:
         provenance["guard_verification"] = guard_verification
+    if reproducibility is not None:
+        provenance["reproducibility"] = reproducibility
     return provenance
 
 
@@ -450,9 +500,15 @@ def format_provenance_lines(provenance):
         f"Task: {task_label}",
         f"Speaker identification: {diar_label}",
     ]
-    # Accurate-mode-only lines (masterplan 2.6). Only appended when present,
-    # so Fast-mode's footer is unchanged — build_provenance()'s Fast-mode
-    # call site never passes these keys, so they are simply absent here.
+    # Accurate-mode-only lines (masterplan 2.6, extended by 2.9). Only
+    # appended when present, so Fast-mode's footer is unchanged —
+    # build_provenance()'s Fast-mode call site never passes these keys, so
+    # they are simply absent here. Reproducibility (which decode strategy
+    # was actually used) is listed first among these, ahead of which model
+    # weights backed the run, since it describes decode-time behaviour
+    # rather than which model/weights were loaded.
+    if provenance.get("reproducibility"):
+        lines.append(f"Reproducibility: {provenance['reproducibility']}")
     if provenance.get("model_id"):
         lines.append(f"Model: {provenance['model_id']}")
     if provenance.get("model_revision"):
@@ -513,7 +569,14 @@ class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("DanScribe AI — Settings")
-        self.geometry("520x320")
+        # Grown from the original 520x320 (masterplan 2.9) to fit the
+        # reproducibility explanation below without clipping it — this window
+        # is not scrollable and not user-resizable, so the geometry must
+        # genuinely be tall enough, not just plausible-looking. Measured (not
+        # guessed) via winfo_reqheight() under Xvfb: real content needs
+        # ~644px; 700 leaves real, checked headroom rather than an arbitrary
+        # round number.
+        self.geometry("520x700")
         self.resizable(False, False)
         self.grab_set()
 
@@ -546,6 +609,21 @@ class SettingsWindow(ctk.CTkToplevel):
             text_color="gray"
         ).pack(pady=2)
 
+        # Masterplan 1.4 / 2.9 — Accurate mode's reproducibility choice.
+        # Fast mode has no equivalent setting and never reads this key.
+        ctk.CTkLabel(
+            self, text="🔁 Accurate Mode — Reproducibility:", font=("Arial", 13, "bold")
+        ).pack(pady=(20, 2))
+        self.repro_var = ctk.StringVar(value=config.get("reproducibility", "Consistent"))
+        ctk.CTkOptionMenu(
+            self, values=["Consistent", "Best effort"],
+            variable=self.repro_var, width=420,
+        ).pack(pady=5)
+        ctk.CTkLabel(
+            self, text=REPRODUCIBILITY_EXPLANATION, font=("Arial", 10),
+            text_color="gray70", justify="left", wraplength=460,
+        ).pack(pady=(4, 10), padx=20)
+
         ctk.CTkButton(
             self, text="Save Settings", command=self.save,
             width=200, fg_color="#1f538d"
@@ -554,6 +632,7 @@ class SettingsWindow(ctk.CTkToplevel):
     def save(self):
         config = load_config()
         _set_api_key(config, self.api_entry.get().strip())
+        config["reproducibility"] = self.repro_var.get()
         save_config(config)
         messagebox.showinfo("DanScribe AI", "Settings saved!")
         self.destroy()
@@ -1107,7 +1186,16 @@ class DanScribeApp(ctk.CTk):
 
         mode = self.mode_var.get()
 
-        # Save last used settings
+        # Save last used settings. Masterplan 2.9 found and fixed a real bug
+        # here: this used to write self.config_data directly — the snapshot
+        # load_config() took once at app startup — which meant clicking Start
+        # Processing silently clobbered any change made via the Settings
+        # window (e.g. the reproducibility choice, or the API key's config-
+        # file fallback) back to whatever was on disk when the app launched,
+        # unless the user restarted the app first. Re-reading fresh here
+        # means an in-session Settings change survives the very next run, not
+        # just the next app launch.
+        self.config_data = load_config()
         self.config_data["last_language"] = self.lang_var.get()
         save_config(self.config_data)
 
@@ -1372,8 +1460,23 @@ class DanScribeApp(ctk.CTk):
             self._ui(self.status_label.configure,
                      text="Status: Processing audio (Accurate mode)...")
 
+            # Read fresh from disk, not self.config_data (loaded once at
+            # startup) — same reasoning as summarize_with_claude()'s API-key
+            # read: a change made in Settings mid-session must take effect on
+            # the very next transcription, not require an app restart.
+            # Masterplan 2.9. Translated to the engine's own constants here
+            # (not a bare number) so accurate_engine.py never needs to know
+            # about Settings' label strings.
+            import accurate_engine
+            repro_choice = load_config().get("reproducibility", "Consistent")
+            temperature = (
+                accurate_engine.TEMPERATURE_CONSISTENT if repro_choice == "Consistent"
+                else accurate_engine.TEMPERATURE_BEST_EFFORT
+            )
+
             result = transcribe_audio_accurate(
                 file_path, language=lang_code, task=whisper_task, model_dir=model_dir,
+                temperature=temperature,
             )
 
             self._ui(self.progress_bar.set, 0.7)
@@ -1406,6 +1509,11 @@ class DanScribeApp(ctk.CTk):
                 model_revision=result.get("model_revision"),
                 model_layout=result.get("model_layout"),
                 guard_verification=result.get("guard_verification"),
+                # Masterplan 2.9 — likewise sourced from the result dict (the
+                # ACTUAL temperature the engine decoded with), not re-read
+                # from Settings here. If the two ever disagreed, provenance
+                # must report reality, not the request.
+                reproducibility=result.get("reproducibility"),
             )
             output_path = self._save_transcript(
                 transcript_text, file_path, provenance=provenance

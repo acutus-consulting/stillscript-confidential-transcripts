@@ -97,6 +97,23 @@ NO_SPEECH_THRESHOLD = 0.6
 TEMPERATURE_BEST_EFFORT = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 TEMPERATURE_CONSISTENT = 0.0
 
+
+def _describe_reproducibility(temperature):
+    """Human label for the temperature value that actually decoded this
+    transcript (masterplan 2.9) — derived from the real value `transcribe()`
+    was called with, not re-derived from Settings at provenance time. This is
+    the same "engine's result is the single source of truth" principle Wave
+    2.6 already established for model_id/model_revision/etc.: if a future
+    caller (a test, a script, a later feature) ever passes some other
+    temperature, provenance must say so honestly rather than mislabelling it
+    as one of the two named Settings choices it isn't.
+    """
+    if temperature == TEMPERATURE_CONSISTENT:
+        return "Consistent"
+    if temperature == TEMPERATURE_BEST_EFFORT:
+        return "Best effort"
+    return f"Custom (temperature={temperature!r})"
+
 SAMPLE_RATE = 16000
 
 # Cache keyed by resolved model directory, so a second transcription in the
@@ -308,7 +325,7 @@ def transcribe(
     with torch.no_grad():
         output = model.generate(**inputs, **generate_kwargs)
 
-    return _build_result(processor, output, language, duration, resolved, guard_report)
+    return _build_result(processor, output, language, duration, resolved, guard_report, temperature)
 
 
 def _describe_model_provenance(resolved, guard_report):
@@ -358,7 +375,7 @@ def _describe_model_provenance(resolved, guard_report):
     }
 
 
-def _build_result(processor, output, language, duration, resolved, guard_report):
+def _build_result(processor, output, language, duration, resolved, guard_report, temperature):
     """Normalise generate()'s output into the Fast seam's result shape."""
     # With return_segments=True, generate() returns a dict:
     #   {"sequences": tensor, "segments": [[seg, seg, ...]]}   (outer list = batch)
@@ -390,5 +407,6 @@ def _build_result(processor, output, language, duration, resolved, guard_report)
         "segments": segments,
         "language": language,
         "engine": ACCURATE_ENGINE_LABEL,
+        "reproducibility": _describe_reproducibility(temperature),
         **_describe_model_provenance(resolved, guard_report),
     }
