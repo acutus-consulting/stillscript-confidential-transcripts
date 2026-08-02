@@ -210,18 +210,41 @@ app._select_fast_mode()
 check("fast mode selected", app.mode_var.get() == "fast")
 check("fast button shows the active colour", app.fast_btn.cget("fg_color") == "#1f538d")
 check("accurate button shows the inactive colour", app.accurate_btn.cget("fg_color") == "gray30")
+check("fast mode's scope label shows the Fast-mode notice, not Accurate's (masterplan 2.11)",
+      app.mode_scope_label.cget("text") == ds.FAST_MODE_SCOPE_NOTE,
+      app.mode_scope_label.cget("text"))
 
 app._select_accurate_mode()
 check("accurate mode selected", app.mode_var.get() == "accurate")
 check("accurate button shows the active colour", app.accurate_btn.cget("fg_color") == "#1f538d")
 check("fast button shows the inactive colour", app.fast_btn.cget("fg_color") == "gray30")
+check("accurate mode's scope label shows the Accurate-mode notice (masterplan 2.11)",
+      app.mode_scope_label.cget("text") == ds.ACCURATE_MODE_SCOPE_NOTE,
+      app.mode_scope_label.cget("text"))
+check("...and neither notice claims a mode is disabled or blocked — this is "
+      "disclosure, not a gate",
+      "disabled" not in ds.FAST_MODE_SCOPE_NOTE.lower()
+      and "disabled" not in ds.ACCURATE_MODE_SCOPE_NOTE.lower()
+      and "blocked" not in ds.FAST_MODE_SCOPE_NOTE.lower()
+      and "blocked" not in ds.ACCURATE_MODE_SCOPE_NOTE.lower())
 
 app.fast_btn.invoke()  # a REAL click — CTkButton.invoke() runs its configured command
 check("invoking the Fast button (a real click) selects fast mode",
       app.mode_var.get() == "fast")
+check("...and a real click updates the scope label too, not just mode_var",
+      app.mode_scope_label.cget("text") == ds.FAST_MODE_SCOPE_NOTE)
 app.accurate_btn.invoke()
 check("invoking the Accurate button (a real click) selects accurate mode",
       app.mode_var.get() == "accurate")
+check("...and a real click updates the scope label too, not just mode_var",
+      app.mode_scope_label.cget("text") == ds.ACCURATE_MODE_SCOPE_NOTE)
+
+# Both modes must remain fully usable regardless of the notice shown —
+# masterplan 2.11 is disclosure, not an enforcement/gating mechanism.
+check("Fast button still enabled after showing its own scope notice",
+      app.fast_btn.cget("state") != "disabled")
+check("Accurate button still enabled after showing its own scope notice",
+      app.accurate_btn.cget("state") != "disabled")
 
 # The runs below save real transcript files into the user's real output
 # directory (~/Documents/DanScribe_Transcriptions), same as the shipped app
@@ -289,6 +312,19 @@ def test_sequence():
         check("states plainly that only the model is downloaded, not recordings "
               "(not buried — check it isn't the smallest/faintest text on screen)",
               "audio" in all_dialog_text and "never" in all_dialog_text)
+        check("states plainly that Accurate mode always transcribes as Afrikaans, "
+              "regardless of the Audio Language menu (masterplan 2.11)",
+              "afrikaans" in all_dialog_text and "audio language" in all_dialog_text)
+        check("names the concrete risk on mixed-language audio — slower, and a "
+              "higher chance of errors needing full (not light) review",
+              "slower" in all_dialog_text and "english" in all_dialog_text
+              and "review" in all_dialog_text)
+        check("does NOT claim mixed-language audio is unusable outright — Wave 2.8's "
+              "own evidence shows large stretches, including English, come through "
+              "correctly; the honest framing is risk/review depth, not a blanket ban",
+              "not currently suitable" not in all_dialog_text
+              and "does not work" not in all_dialog_text
+              and "doesn't work" not in all_dialog_text)
 
         dlg.decline_btn.invoke()
         (yield from pump_until_gen(lambda: app.main_btn.cget("state") == "normal"))

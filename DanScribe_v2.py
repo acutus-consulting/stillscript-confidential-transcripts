@@ -169,6 +169,37 @@ FAST_MODE_MODEL = "medium"
 # Phase 3 adds the accurate-mode engine (large-v3 + adapter revision SHA).
 FAST_MODE_ENGINE_LABEL = "DanScribe Fast — Whisper Medium"
 
+# Masterplan 2.11 — mode-scope notices shown next to the Mode buttons (section
+# 3 of the main window), swapped by _select_fast_mode()/_select_accurate_mode()
+# so whichever mode is active always has its own scope reminder visible. Not a
+# gate: both modes stay fully usable regardless of what's selected in the
+# Audio Language menu above — this is disclosure, not enforcement, matching
+# how AccurateConsentDialog already states limitations without blocking
+# anything a user chooses to do.
+#
+# Evidence base (masterplan 2.8, all real, not assumed): a 3:20 noisy-bar
+# clip (reclassified as an extreme case) and a 46-min mixed Afrikaans/English
+# committee recording both real Accurate-mode runs. Fast mode has no engine
+# of its own to re-test here — its Afrikaans/Dutch-drift issue was already
+# known before 2.8 — but 2.8's finding that this product does not validate
+# ANY mode against non-Afrikaans audio applies to Fast mode just as much.
+FAST_MODE_SCOPE_NOTE = (
+    "⚡ Fast mode is tuned and tested for Afrikaans. It's known to drift "
+    "toward Dutch spelling occasionally, even on Afrikaans audio. For any "
+    "other language, StillScript has not validated Fast mode's accuracy — "
+    "treat those results as unverified."
+)
+
+# Short version for the main window, next to the Mode buttons — always
+# visible once Accurate is selected, unlike AccurateConsentDialog's fuller
+# explanation, which a user only sees once, on first activation.
+ACCURATE_MODE_SCOPE_NOTE = (
+    "🎯 Accurate mode always transcribes as Afrikaans, regardless of the "
+    "Audio Language setting above. If your recording mixes in English or "
+    "another language, expect it to run slower and carry a meaningfully "
+    "higher chance of errors that need a full read-through, not a light one."
+)
+
 # Third-party attribution shown in the "About" (Credits) dialog. Masterplan
 # 2.7 appends the fine-tuned Afrikaans model + dataset entries (CC-BY-4.0)
 # below — same list, same CreditsWindow, no UI change.
@@ -645,7 +676,9 @@ class AccurateConsentDialog(ctk.CTkToplevel):
     def __init__(self, parent, info, *, on_confirm, on_decline):
         super().__init__(parent)
         self.title("StillScript — Accurate Mode Setup")
-        self.geometry("480x420")
+        # 480x420 through masterplan 2.3; grown to fit the mixed-language
+        # notice added in 2.11 without cramming the existing rows.
+        self.geometry("480x620")
         self.resizable(False, False)
         self.grab_set()
         self._on_confirm = on_confirm
@@ -688,6 +721,26 @@ class AccurateConsentDialog(ctk.CTkToplevel):
             "expect it to take hours, not minutes. You can leave StillScript\n"
             "running in the background; if it's interrupted, it picks up\n"
             "where it left off rather than starting over."
+        )
+        # Masterplan 2.11, based on real Accurate-mode runs (2.8): a 3:20
+        # noisy-bar clip and a real 46-min mixed Afrikaans/English committee
+        # recording. Stated here, not just in the main window's smaller
+        # reminder, because this is the one point where a first-time user is
+        # deciding whether Accurate mode fits what they actually record —
+        # someone whose work regularly involves code-switched audio should
+        # know that going in, not discover it after a multi-hour transcription.
+        _row(
+            "🌍  Built for Afrikaans: this mode always transcribes as\n"
+            "Afrikaans, no matter what Audio Language is selected above —\n"
+            "its model is tuned specifically for Afrikaans. If your\n"
+            "recording has real, significant English (or another language)\n"
+            "mixed in, expect it to run slower, and expect a meaningfully\n"
+            "higher chance of scattered errors that need a full, careful\n"
+            "read-through rather than a light check. This doesn't mean the\n"
+            "transcript is unusable — long stretches, including whole\n"
+            "English passages, often come through correctly — just that\n"
+            "mixed-language recordings need closer review than a\n"
+            "purely-Afrikaans one would."
         )
 
         # Confidentiality point — stated plainly, in its own visually distinct
@@ -934,6 +987,17 @@ class DanScribeApp(ctk.CTk):
         )
         self.accurate_btn.grid(row=0, column=1)
 
+        # Persistent, non-blocking scope notice (masterplan 2.11) — swapped by
+        # _select_fast_mode()/_select_accurate_mode() below, same as the two
+        # buttons' colours, so it always reflects whichever mode is actually
+        # selected. This is disclosure, not a gate: neither mode is disabled
+        # or blocked by anything stated here.
+        self.mode_scope_label = ctk.CTkLabel(
+            self, text=FAST_MODE_SCOPE_NOTE, font=("Arial", 10),
+            text_color="gray70", justify="center", wraplength=460,
+        )
+        self.mode_scope_label.pack(pady=(4, 0))
+
         # 4. Speaker identification
         ctk.CTkLabel(self, text="4. Speaker Identification:", font=("Arial", 13, "bold")).pack(pady=(10, 2))
         self.diarize_var = ctk.BooleanVar(value=False)
@@ -1007,11 +1071,13 @@ class DanScribeApp(ctk.CTk):
         self.mode_var.set("fast")
         self.fast_btn.configure(fg_color="#1f538d")
         self.accurate_btn.configure(fg_color="gray30")
+        self.mode_scope_label.configure(text=FAST_MODE_SCOPE_NOTE)
 
     def _select_accurate_mode(self):
         self.mode_var.set("accurate")
         self.accurate_btn.configure(fg_color="#1f538d")
         self.fast_btn.configure(fg_color="gray30")
+        self.mode_scope_label.configure(text=ACCURATE_MODE_SCOPE_NOTE)
 
     # ── SETTINGS / CREDITS ──────────────────
 
