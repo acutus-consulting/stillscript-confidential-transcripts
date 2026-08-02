@@ -97,6 +97,15 @@ NO_SPEECH_THRESHOLD = 0.6
 TEMPERATURE_BEST_EFFORT = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 TEMPERATURE_CONSISTENT = 0.0
 
+# Masterplan 2.4: `transcribe()`'s `progress_callback` receives transformers'
+# `monitor_progress` tensor, which reports feature-frame counts, not seconds or
+# tokens. Verified empirically (real transcribe() call, real callback, logged
+# every invocation) rather than assumed from the transformers docstring alone:
+# both agree on 100 frames per second, tied to WhisperFeatureExtractor's fixed
+# hop length, not something that varies by model size or audio content. Exposed
+# here so the UI never has to hardcode a model-internal constant of its own.
+PROGRESS_FRAMES_PER_SECOND = 100.0
+
 
 def _describe_reproducibility(temperature):
     """Human label for the temperature value that actually decoded this
@@ -277,7 +286,34 @@ def transcribe(
          "engine": str}
 
     `progress_callback` is optional and receives the raw progress tensor from
-    transformers; the time-warning / progress UI itself is masterplan 2.4.
+    transformers' `monitor_progress` hook, forwarded here unmodified as
+    `generate_kwargs["monitor_progress"]`. Verified (2026, masterplan 2.4) —
+    both by reading transformers' own source and by a real transcribe() call
+    with a callback that logged every invocation — to behave as follows, none
+    of which is obvious from the parameter name alone:
+
+      * Shape `(n, 2)`, `n` = batch size — always 1 here, this engine never
+        batches. `p[0, 0]` = the audio-frame index currently being decoded;
+        `p[0, 1]` = the total frame count for this audio. Both are counts of
+        100-Hz feature frames (PROGRESS_FRAMES_PER_SECOND above), i.e.
+        `p[0, 0] / PROGRESS_FRAMES_PER_SECOND` is seconds of audio reached so
+        far — NOT tokens generated, NOT wall-clock time, NOT a 0-1 fraction
+        (callers divide the two themselves).
+      * Called once per long-form decoding window (Whisper's fixed ~30s
+        window), at the START of that window, before its temperature-fallback
+        retries (if any) run — so it does NOT fire again mid-retry, and a
+        slow/difficult window means a long real gap with no call at all.
+        Measured real gaps between calls on one run: 6s, 64s, 66s wall-clock
+        for three consecutive ~30s-audio windows — i.e. call spacing is tied
+        to how long each window takes to decode, not to a fixed interval.
+      * Never called at all for short-form audio (a single window, no
+        seek-loop) — this engine's `truncation=False` + attention-mask setup
+        forces the long-form path for any audio this product actually
+        transcribes, but a caller passing a clip under Whisper's window
+        length would see zero calls. Progress UI must tolerate that (and any
+        other zero-calls case) as a normal outcome, not an error.
+
+    The time-warning / progress UI itself is masterplan 2.4.
     """
     import torch
     import librosa

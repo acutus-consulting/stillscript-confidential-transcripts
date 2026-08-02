@@ -5,6 +5,7 @@ import json
 import base64
 import logging
 import threading
+import time
 import webbrowser
 from pathlib import Path
 import customtkinter as ctk
@@ -243,6 +244,90 @@ REPRODUCIBILITY_EXPLANATION = (
     "Always review the transcript against the audio for anything that "
     "matters."
 )
+
+# Masterplan 2.4 — real multipliers measured across golf 2.8/2.10's Accurate-
+# mode test runs (transcription time only; diarization is separate, below).
+# Kept as a RANGE per Reproducibility setting, not a single number: golf 2.8
+# found a real ~3x spread depending on how difficult the audio actually is,
+# and one "~3x" figure would misrepresent that spread as precision it doesn't
+# have.
+#
+#   Consistent:  2.98x (clean, 2.10)     .. 3.08x (extreme noise, 2.8)
+#   Best effort: 3.06x (clean, 2.8/2.10) .. 9.46x (extreme noise, 2.8)
+#                                            (mixed-language, 2.8: 7.175x,
+#                                             already inside this range)
+#
+# Consistent's range is narrower because every difficult-audio run measured
+# under Consistent has landed close to 3x — Best effort's own fallback
+# retries are what cause its much wider spread on hard audio. Consistent has
+# NOT been tested yet on heavily multi-language audio specifically (golf
+# 2.10's own remaining optional follow-up) — ACCURATE_TIME_ESTIMATE_EXPLANATION
+# below says so explicitly rather than implying that narrow range is proven
+# for that case too.
+ACCURATE_TRANSCRIPTION_MULTIPLIER_RANGE = {
+    "Consistent": (2.98, 3.08),
+    "Best effort": (3.06, 9.46),
+}
+
+# Diarization (golf 2.12's pyannote backend) runs as a separate step AFTER
+# transcription and adds roughly its own length again, regardless of the
+# Reproducibility setting above — it never reads that setting at all (it has
+# no temperature of its own to vary). Measured 0.95x-1.21x additional across
+# golf 2.10's real run (1.13x) and golf 2.12's own spike benchmarks
+# (0.948x-1.21x) on real audio.
+ACCURATE_DIARIZATION_MULTIPLIER_RANGE = (0.95, 1.21)
+
+# Shown in AccurateTimeEstimateDialog (masterplan 2.4), alongside the
+# per-file numeric range _estimate_accurate_time_range() computes. A distinct
+# step from AccurateConsentDialog (2.3, one-time model-download consent) and
+# the persistent scope notices (2.9/2.11, mode/language scope) — this is
+# about how long THIS specific file will take, shown on every Accurate-mode
+# run, not just the first activation.
+ACCURATE_TIME_ESTIMATE_EXPLANATION = (
+    "Accurate mode is intentionally a \"start it and check back later\" "
+    "step, not something you need to watch. Typically about 3x the "
+    "recording's length with Consistent — real tests have stayed close to "
+    "that even on very difficult audio. Best effort is usually similar, but "
+    "can run significantly longer — up to roughly 9x or more — on very "
+    "noisy, overlapping-speaker, or heavily multi-language audio, because it "
+    "retries unclear passages before settling on an answer. Consistent "
+    "hasn't been tested yet on heavily multi-language audio specifically, "
+    "so treat that combination as a possible exception. Speaker "
+    "identification, if enabled, adds roughly the recording's length again "
+    "on top of this."
+)
+
+
+def _estimate_accurate_time_range(duration_seconds, reproducibility, diarize):
+    """Real-multiplier time estimate for masterplan 2.4 — a range, not a
+    single number (see ACCURATE_TRANSCRIPTION_MULTIPLIER_RANGE's own
+    reasoning above for why false precision would misrepresent golf 2.8's
+    own measured spread).
+
+    Returns (low_seconds, high_seconds), or None if duration_seconds is None
+    — _probe_audio_duration_seconds() already returns None for "couldn't
+    determine the length" rather than raising, so this mirrors that and
+    lets callers show a duration-less version of the estimate instead of
+    crashing on unreadable audio metadata.
+
+    An unrecognised `reproducibility` value (should never happen — load_config()
+    already validates it against the same two choices SettingsWindow offers)
+    falls back to "Consistent"'s range rather than raising, the same
+    fail-safe convention load_config() itself uses for this exact key.
+    """
+    if duration_seconds is None:
+        return None
+    t_low, t_high = ACCURATE_TRANSCRIPTION_MULTIPLIER_RANGE.get(
+        reproducibility, ACCURATE_TRANSCRIPTION_MULTIPLIER_RANGE["Consistent"]
+    )
+    low = duration_seconds * t_low
+    high = duration_seconds * t_high
+    if diarize:
+        d_low, d_high = ACCURATE_DIARIZATION_MULTIPLIER_RANGE
+        low += duration_seconds * d_low
+        high += duration_seconds * d_high
+    return (low, high)
+
 
 # Third-party attribution shown in the "About" (Credits) dialog. Masterplan
 # 2.7 appends the fine-tuned Afrikaans model + dataset entries (CC-BY-4.0)
@@ -531,16 +616,21 @@ def format_provenance_lines(provenance):
 # recordings where individual turn boundaries aren't scrutinized.
 # ⚠ UNUSED as of masterplan 2.12 — kept, not deleted, deliberately.
 #
-# This gate and _probe_audio_duration_seconds() below now have NO callers. They
-# existed to bound memory while extracting one feature vector per Whisper
-# segment: short files loaded whole via librosa.load, long ones decoded once to
-# a temp WAV and seeked per segment. The pyannote backend does no per-segment
-# feature extraction at all, so there is nothing left to gate — the branch was
-# not "removed as a simplification", it lost its subject.
+# This gate had NO callers as of masterplan 2.12. It existed to bound memory
+# while extracting one feature vector per Whisper segment: short files loaded
+# whole via librosa.load, long ones decoded once to a temp WAV and seeked per
+# segment. The pyannote backend does no per-segment feature extraction at
+# all, so there is nothing left to gate — the branch was not "removed as a
+# simplification", it lost its subject.
 #
-# Removing these two, and the frozen-app PATH note at the top of this file that
-# mentions them, is a tidy-up that was explicitly scoped OUT of 2.12 (backend
-# swap only). Do not assume the gate is live: it is not.
+# Removing this constant, and the frozen-app PATH note at the top of this file
+# that mentions it, is a tidy-up that was explicitly scoped OUT of 2.12
+# (backend swap only). Do not assume the gate is live: it is not.
+#
+# _probe_audio_duration_seconds() below is a DIFFERENT story: it had no
+# caller either, from 2.12 until masterplan 2.4 gave it its first real one
+# (the pre-transcription time estimate) — same function, genuinely revived,
+# not a coincidental name match.
 DIARIZE_LONG_FILE_THRESHOLD_SEC = 20 * 60  # 20 minutes
 
 
@@ -939,6 +1029,106 @@ def _format_eta(seconds):
     return f"{secs}s"
 
 
+class AccurateTimeEstimateDialog(ctk.CTkToplevel):
+    """Per-run time estimate, shown right before an Accurate-mode
+    transcription actually starts (masterplan 2.4) — after any first-time
+    model-download consent (masterplan 2.3) is already resolved, and distinct
+    from it: that dialog is about whether to download a fixed-size model at
+    all; this one is about how long THIS specific file will take, given its
+    length and the currently-selected Reproducibility setting (masterplan
+    2.9). Shown on every Accurate-mode run, not just the first activation,
+    because the estimate genuinely differs per file — unlike the persistent
+    mode/language scope notices (2.9/2.11), which say the same thing every
+    time regardless of which file is selected.
+    """
+
+    def __init__(self, parent, *, duration_seconds, reproducibility, diarize,
+                 on_start, on_cancel):
+        super().__init__(parent)
+        self.title("StillScript — Accurate Mode Time Estimate")
+        # Measured via winfo_reqheight() under Xvfb, same discipline as
+        # SettingsWindow's own geometry comment — not guessed. Real content
+        # needs ~405px across every duration/diarize/reproducibility
+        # combination tested; 460x430 leaves real, checked headroom.
+        self.geometry("460x430")
+        self.resizable(False, False)
+        self.grab_set()
+        self._on_start = on_start
+        self._on_cancel = on_cancel
+
+        # Kept as attributes, same reasoning as AccurateConsentDialog.size_gb:
+        # so a test can check the real numbers behind the dialog directly,
+        # rather than parsing rendered label text.
+        self.duration_seconds = duration_seconds
+        self.reproducibility = reproducibility
+        self.estimate_range = _estimate_accurate_time_range(
+            duration_seconds, reproducibility, diarize
+        )
+
+        ctk.CTkLabel(
+            self, text="⏱  Accurate Mode — Time Estimate",
+            font=("Arial", 17, "bold"),
+        ).pack(pady=(20, 4))
+
+        info_frame = ctk.CTkFrame(self, fg_color="gray20")
+        info_frame.pack(fill="x", padx=24, pady=4)
+
+        def _row(text):
+            label = ctk.CTkLabel(
+                info_frame, text=text, font=("Arial", 12),
+                justify="left", anchor="w", wraplength=400,
+            )
+            label.pack(fill="x", padx=14, pady=8)
+            return label
+
+        if duration_seconds is not None:
+            _row(f"🎵  Recording length: {_format_eta(duration_seconds)}")
+        else:
+            _row("🎵  Recording length: could not be determined.")
+
+        _row(f"🔁  Reproducibility setting: {reproducibility}")
+
+        if self.estimate_range is not None:
+            low, high = self.estimate_range
+            diarize_note = " (includes speaker identification)" if diarize else ""
+            self.estimate_label = _row(
+                f"⏳  Estimated time: {_format_eta(low)} – {_format_eta(high)}"
+                f"{diarize_note}"
+            )
+        else:
+            self.estimate_label = _row(
+                "⏳  Estimated time: unknown (couldn't read this file's "
+                "length) — expect the ranges described below once "
+                "processing begins."
+            )
+
+        ctk.CTkLabel(
+            self, text=ACCURATE_TIME_ESTIMATE_EXPLANATION, font=("Arial", 11),
+            text_color="gray70", justify="left", wraplength=410,
+        ).pack(pady=(12, 10), padx=20)
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=16)
+        self.cancel_btn = ctk.CTkButton(
+            btn_frame, text="Cancel", command=self._cancel,
+            width=140, height=42, fg_color="gray30",
+        )
+        self.cancel_btn.grid(row=0, column=0, padx=8)
+        self.start_btn = ctk.CTkButton(
+            btn_frame, text="▶ Start Transcription", command=self._start,
+            width=220, height=42, fg_color="#1f538d", font=("Arial", 13, "bold"),
+        )
+        self.start_btn.grid(row=0, column=1, padx=8)
+
+    def _start(self):
+        self.destroy()
+        self._on_start()
+
+    def _cancel(self):
+        self.destroy()
+        self._on_cancel()
+
+
 # ─────────────────────────────────────────────
 #  MAIN APPLICATION
 # ─────────────────────────────────────────────
@@ -1320,9 +1510,14 @@ class DanScribeApp(ctk.CTk):
                     logger.error("Accurate model check failed unexpectedly: %s", e, exc_info=True)
                     self._ui(self._on_accurate_setup_failed, e)
                     return
-                self._transcribe_with_accurate_model(
-                    model_dir, file_path, language_label, lang_code,
-                    whisper_task, do_diarize, num_speakers,
+                # Masterplan 2.4 — cheap (ffprobe metadata, no decode), safe to
+                # call on this background thread before handing off to the main
+                # thread for the dialog itself (Tk widgets are main-thread only).
+                duration_seconds = _probe_audio_duration_seconds(file_path)
+                self._ui(
+                    self._show_accurate_time_estimate,
+                    model_dir, file_path, duration_seconds, language_label,
+                    lang_code, whisper_task, do_diarize, num_speakers,
                 )
 
             threading.Thread(target=already_ready_worker, daemon=True).start()
@@ -1413,9 +1608,14 @@ class DanScribeApp(ctk.CTk):
                 return
 
             self._ui(progress_dialog.destroy)
-            self._transcribe_with_accurate_model(
-                model_dir, file_path, language_label, lang_code,
-                whisper_task, do_diarize, num_speakers,
+            # Masterplan 2.4 — same reasoning as the already-ready path above:
+            # cheap, background-thread-safe duration probe, then hand off to
+            # the main thread for the dialog.
+            duration_seconds = _probe_audio_duration_seconds(file_path)
+            self._ui(
+                self._show_accurate_time_estimate,
+                model_dir, file_path, duration_seconds, language_label,
+                lang_code, whisper_task, do_diarize, num_speakers,
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1447,13 +1647,52 @@ class DanScribeApp(ctk.CTk):
 
         self.main_btn.configure(state="normal")
 
+    def _show_accurate_time_estimate(self, model_dir, file_path, duration_seconds,
+                                      language_label, lang_code, whisper_task,
+                                      do_diarize, num_speakers):
+        """Masterplan 2.4 — the seam Wave 2.3 deliberately left: both Accurate-
+        mode routes above now converge here instead of calling
+        _transcribe_with_accurate_model() directly, so the time estimate is
+        shown exactly once per run regardless of which route got here. Runs
+        on the main thread (Tk widgets require it) — the actual heavy work is
+        deferred to a fresh background thread only if the user clicks Start,
+        never blocking the UI either way.
+
+        Reads Settings fresh (masterplan 2.9's own discipline: never
+        self.config_data, which is a startup snapshot) so the dialog shows
+        whatever Reproducibility choice is actually in effect right now.
+        """
+        repro_choice = load_config().get("reproducibility", "Consistent")
+
+        def on_start():
+            threading.Thread(
+                target=self._transcribe_with_accurate_model,
+                args=(model_dir, file_path, language_label, lang_code,
+                      whisper_task, do_diarize, num_speakers),
+                daemon=True,
+            ).start()
+
+        def on_cancel():
+            # Same reset shape as declining the golf 2.3 consent dialog —
+            # the user said no, that is not a failure.
+            self.status_label.configure(text="Status: Ready")
+            self.progress_bar.set(0)
+            self.main_btn.configure(state="normal")
+
+        AccurateTimeEstimateDialog(
+            self, duration_seconds=duration_seconds, reproducibility=repro_choice,
+            diarize=do_diarize, on_start=on_start, on_cancel=on_cancel,
+        )
+
     def _transcribe_with_accurate_model(self, model_dir, file_path, language_label, lang_code,
                                          whisper_task, do_diarize, num_speakers):
         """Runs on a background thread — the shared tail for both Accurate-mode
-        routes above. Everything from here down is what Wave 2.4's duration
-        warning / generate()-progress UI will extend; the transcribe_audio_
-        accurate() call is the seam (an extra progress_callback= kwarg is all
-        it would need)."""
+        routes above, reached only after masterplan 2.4's time-estimate dialog
+        (see _show_accurate_time_estimate()) has already been shown and
+        confirmed. Wires masterplan 2.4's real transcription-progress UI
+        through the progress_callback= seam Wave 2.3 left here; see
+        accurate_engine.transcribe()'s docstring for exactly what that
+        callback reports and how often."""
         self._ui(self.status_label.configure, text="Status: Loading Accurate-mode model...")
         self._ui(self.progress_bar.set, 0.3)
         try:
@@ -1474,9 +1713,51 @@ class DanScribeApp(ctk.CTk):
                 else accurate_engine.TEMPERATURE_BEST_EFFORT
             )
 
+            # Masterplan 2.4. This callback runs INSIDE transformers'
+            # generate() loop, on THIS background thread — not marshaled
+            # through self._ui() itself (only the widget updates it triggers
+            # are). An exception escaping it would propagate up through
+            # generate() and abort a run that can take over an hour, so
+            # every line that can fail is inside its own try/except that
+            # only logs, never raises — a UI bug must never be able to do
+            # that to a long transcription. Silently doing nothing on a
+            # malformed/unexpected `p` is deliberate: the alternative
+            # (crashing the transcription over a progress-display glitch)
+            # is strictly worse for this product's actual purpose.
+            run_start = time.monotonic()
+
+            def on_progress(p):
+                try:
+                    seek_frames = float(p[0][0])
+                    total_frames = float(p[0][1])
+                    if total_frames <= 0:
+                        return
+                    fraction = max(0.0, min(1.0, seek_frames / total_frames))
+                    elapsed = time.monotonic() - run_start
+                    processed_s = seek_frames / accurate_engine.PROGRESS_FRAMES_PER_SECOND
+                    total_s = total_frames / accurate_engine.PROGRESS_FRAMES_PER_SECOND
+                    # Scaled into the existing 0.3-0.7 "processing audio" band
+                    # (0.1 = model loading, 0.7 = transcription done, 1.0 =
+                    # fully done) rather than inventing a new range — the
+                    # milestones before/after this call are unchanged.
+                    self._ui(self.progress_bar.set, 0.3 + fraction * 0.4)
+                    self._ui(
+                        self.status_label.configure,
+                        text=(
+                            "Status: Transcribing (Accurate mode)... "
+                            f"{_format_eta(processed_s)} / {_format_eta(total_s)} "
+                            f"of audio processed (elapsed {_format_eta(elapsed)})"
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Accurate-mode progress update skipped (non-fatal, "
+                        "transcription continues): %s", e
+                    )
+
             result = transcribe_audio_accurate(
                 file_path, language=lang_code, task=whisper_task, model_dir=model_dir,
-                temperature=temperature,
+                temperature=temperature, progress_callback=on_progress,
             )
 
             self._ui(self.progress_bar.set, 0.7)

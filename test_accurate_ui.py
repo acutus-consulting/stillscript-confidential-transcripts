@@ -159,9 +159,10 @@ def reset_mb():
 
 # ── dialog capture: get a handle on the REAL dialog instances the app creates,
 #    without faking their behaviour — subclassing, not replacing. ────────────
-captured = {"consent": [], "progress": []}
+captured = {"consent": [], "progress": [], "time_estimate": []}
 _RealConsentDialog = ds.AccurateConsentDialog
 _RealProgressDialog = ds.AccurateDownloadProgressDialog
+_RealTimeEstimateDialog = ds.AccurateTimeEstimateDialog
 
 
 class _CapturingConsentDialog(_RealConsentDialog):
@@ -176,8 +177,33 @@ class _CapturingProgressDialog(_RealProgressDialog):
         captured["progress"].append(self)
 
 
+class _CapturingTimeEstimateDialog(_RealTimeEstimateDialog):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        captured["time_estimate"].append(self)
+
+
 ds.AccurateConsentDialog = _CapturingConsentDialog
 ds.AccurateDownloadProgressDialog = _CapturingProgressDialog
+ds.AccurateTimeEstimateDialog = _CapturingTimeEstimateDialog
+
+# Masterplan 2.4 added a real, modal per-run confirmation (AccurateTimeEstimateDialog)
+# between "model ready" and "transcription actually starts". Sections 3-5 below
+# predate 2.4 and only care about consent/download/settings wiring, not this new
+# dialog, so a standing watcher auto-clicks "Start Transcription" the instant one
+# appears — keeping those sections' existing pump_until_gen(showinfo) waits correct
+# without editing their own logic. Section 6 (2.4's own tests) turns this off for
+# the sub-tests that need to inspect/interact with the dialog itself.
+_auto_confirm_time_estimate = {"value": True}
+
+
+def _auto_confirm_time_estimate_watcher():
+    if (_auto_confirm_time_estimate["value"] and captured["time_estimate"]
+            and not getattr(captured["time_estimate"][-1], "_test_auto_clicked", False)):
+        dlg = captured["time_estimate"][-1]
+        dlg._test_auto_clicked = True
+        dlg.start_btn.invoke()
+    app.after(20, _auto_confirm_time_estimate_watcher)
 
 
 TEST_SCRATCH = tempfile.mkdtemp(prefix="stillscript_ui_test_")
@@ -189,6 +215,7 @@ print("=== 1. The app constructs, and the Accurate button is live ===")
 # ════════════════════════════════════════════════════════════════════════════
 app = ds.DanScribeApp()
 app.withdraw()  # off-screen; state and event handling are unaffected
+app.after(20, _auto_confirm_time_estimate_watcher)
 
 check("Accurate button exists", hasattr(app, "accurate_btn"))
 check("Accurate button is NOT disabled",
@@ -756,6 +783,228 @@ def test_sequence():
                       "Speaker" in preview, preview[:200])
         finally:
             ds.transcribe_audio_accurate = real_transcribe_5
+            app.diarize_var.set(False)
+
+
+    # ════════════════════════════════════════════════════════════════════════════
+    print("\n=== 6. Masterplan 2.4 — time-estimate dialog + real progress-callback "
+          "wiring ===")
+    # ════════════════════════════════════════════════════════════════════════════
+    if not real_model_ready:
+        print("  [SKIP] same reason as sections 4/5 — no real model on this machine.")
+    else:
+        # ── 6a. The dialog appears, before transcription starts, with the REAL
+        #        probed duration and the REAL current Settings choice; clicking
+        #        Start proceeds to a real (mocked-engine) run. Also doubles as
+        #        the "progress_callback fires zero times" defensive proof — this
+        #        mock never calls it, and the run must still complete normally. ──
+        _auto_confirm_time_estimate["value"] = False
+        had_config_6 = os.path.exists(ds.CONFIG_PATH)
+        original_config_raw_6 = None
+        if had_config_6:
+            with open(ds.CONFIG_PATH) as f:
+                original_config_raw_6 = f.read()
+
+        def mock_transcribe_6a(path, *, language, task, model_dir=None, **kw):
+            return {"text": "kort toets", "segments": [{"start": 0, "end": 1, "text": "kort toets"}],
+                    "language": language, "engine": FAKE_ENGINE_LABEL}
+
+        real_transcribe_6a = ds.transcribe_audio_accurate
+        ds.transcribe_audio_accurate = mock_transcribe_6a
+        try:
+            for choice in ("Consistent", "Best effort"):
+                cfg = ds.load_config()
+                cfg["reproducibility"] = choice
+                ds.save_config(cfg)
+
+                captured["time_estimate"].clear()
+                reset_mb()
+                app.diarize_var.set(False)
+                start_accurate_run(BENCH_CLIP)
+                ok = (yield from pump_until_gen(lambda: len(captured["time_estimate"]) >= 1))
+                check(f"AccurateTimeEstimateDialog actually appears before "
+                      f"transcription starts, for reproducibility={choice!r}", ok)
+
+                if ok:
+                    dlg = captured["time_estimate"][-1]
+                    check("dialog's recorded duration matches the REAL probed "
+                          "file duration (ffprobe against the real clip, not a "
+                          "guessed/hardcoded value)",
+                          dlg.duration_seconds is not None
+                          and abs(dlg.duration_seconds - 30.0) < 0.5,
+                          dlg.duration_seconds)
+                    check(f"dialog's recorded reproducibility matches the real, "
+                          f"currently-saved Settings choice ({choice!r}), not a "
+                          f"stale/default one",
+                          dlg.reproducibility == choice, dlg.reproducibility)
+                    expected_range = ds._estimate_accurate_time_range(
+                        dlg.duration_seconds, choice, False)
+                    check("dialog's estimate_range matches "
+                          "_estimate_accurate_time_range()'s own output exactly "
+                          "for these inputs — the dialog isn't computing its own, "
+                          "possibly-diverging numbers",
+                          dlg.estimate_range == expected_range,
+                          (dlg.estimate_range, expected_range))
+
+                    dlg.start_btn.invoke()
+                    ok2 = (yield from pump_until_gen(
+                        lambda: len(mb_calls["showinfo"]) >= 1, timeout=30))
+                    check(f"clicking Start actually proceeds to a real "
+                          f"transcription run ({choice!r})", ok2)
+                    check("...and it completes successfully even though "
+                          "progress_callback was never invoked by the engine in "
+                          "this run — zero calls is a normal outcome (e.g. "
+                          "short-form audio, per accurate_engine.transcribe()'s "
+                          "own docstring), not an error masterplan 2.4 must guard "
+                          "against with a crash",
+                          ok2)
+        finally:
+            ds.transcribe_audio_accurate = real_transcribe_6a
+            _auto_confirm_time_estimate["value"] = True
+            if had_config_6:
+                with open(ds.CONFIG_PATH, "w") as f:
+                    f.write(original_config_raw_6)
+            else:
+                try:
+                    os.remove(ds.CONFIG_PATH)
+                except OSError:
+                    pass
+
+        # ── 6b. Cancel actually prevents the run, not just closes the dialog. ──
+        _auto_confirm_time_estimate["value"] = False
+        captured["time_estimate"].clear()
+        reset_mb()
+        cancel_transcribe_calls = []
+
+        def mock_transcribe_6b(path, *, language, task, model_dir=None, **kw):
+            cancel_transcribe_calls.append(1)
+            return {"text": "should never be reached", "segments": [],
+                    "language": language, "engine": FAKE_ENGINE_LABEL}
+
+        real_transcribe_6b = ds.transcribe_audio_accurate
+        ds.transcribe_audio_accurate = mock_transcribe_6b
+        try:
+            app.diarize_var.set(False)
+            start_accurate_run(BENCH_CLIP)
+            ok = (yield from pump_until_gen(lambda: len(captured["time_estimate"]) >= 1))
+            check("time-estimate dialog appears before the Cancel test", ok)
+            if ok:
+                dlg = captured["time_estimate"][-1]
+                dlg.cancel_btn.invoke()
+                ok2 = (yield from pump_until_gen(
+                    lambda: app.main_btn.cget("state") == "normal", timeout=10))
+                check("clicking Cancel on the time-estimate dialog re-enables "
+                      "the main button", ok2)
+                check("...and the transcription engine was NEVER called — "
+                      "Cancel must actually prevent the run, not just close "
+                      "the dialog cosmetically",
+                      len(cancel_transcribe_calls) == 0, len(cancel_transcribe_calls))
+                check("...and the status resets to Ready, not left showing a "
+                      "stale 'Processing' message",
+                      app.status_label.cget("text") == "Status: Ready",
+                      app.status_label.cget("text"))
+                check("...and the progress bar resets to 0",
+                      app.progress_bar.get() == 0, app.progress_bar.get())
+        finally:
+            ds.transcribe_audio_accurate = real_transcribe_6b
+            _auto_confirm_time_estimate["value"] = True
+
+        # ── 6c. The real progress_callback= kwarg reaches transcribe_audio_
+        #        accurate() as an actual callable, and invoking it with a
+        #        real-shaped tensor updates the REAL progress_bar/status_label
+        #        widgets — not just present in code. Uses a threading.Event to
+        #        park the mocked engine call deterministically, rather than
+        #        racing an instant mock against this thread's manual callback
+        #        invocation. ──────────────────────────────────────────────────
+        mock6_release = threading.Event()
+        progress_callback_capture = {"value": None}
+
+        def mock_transcribe_6c(path, *, language, task, model_dir=None, **kw):
+            progress_callback_capture["value"] = kw.get("progress_callback")
+            mock6_release.wait(timeout=30)
+            return {"text": "kort toets", "segments": [{"start": 0, "end": 1, "text": "kort toets"}],
+                    "language": language, "engine": FAKE_ENGINE_LABEL}
+
+        real_transcribe_6c = ds.transcribe_audio_accurate
+        ds.transcribe_audio_accurate = mock_transcribe_6c
+        mock6_release.clear()
+        progress_callback_capture["value"] = None
+        reset_mb()
+        try:
+            app.diarize_var.set(False)
+            start_accurate_run(BENCH_CLIP)
+            ok = (yield from pump_until_gen(
+                lambda: progress_callback_capture["value"] is not None, timeout=30))
+            check("progress_callback= actually reaches transcribe_audio_accurate() "
+                  "as a real callable argument, not omitted",
+                  ok and callable(progress_callback_capture["value"]))
+
+            if ok:
+                cb = progress_callback_capture["value"]
+                bar_before = app.progress_bar.get()
+
+                # Real shape per accurate_engine.transcribe()'s verified docstring:
+                # (1, 2) = [[seek_frames, total_frames]]. 1500/3000 = 50% through
+                # a 30s (3000-frame) window.
+                cb([[1500, 3000]])
+                ok2 = (yield from pump_until_gen(
+                    lambda: app.progress_bar.get() != bar_before, timeout=10))
+                check("invoking the real progress callback with a real-shaped "
+                      "tensor actually updates the REAL progress_bar widget — "
+                      "wired to real UI updates, not just present in code",
+                      ok2, app.progress_bar.get())
+                check("the scaled fraction is exactly right: seek=1500/"
+                      "total=3000 = 50%% maps into the existing 0.3-0.7 "
+                      "'processing audio' band at 0.3+0.5*0.4=0.5",
+                      abs(app.progress_bar.get() - 0.5) < 1e-6, app.progress_bar.get())
+
+                status_text = app.status_label.cget("text")
+                check("the REAL status_label reflects processed/total audio "
+                      "time derived from PROGRESS_FRAMES_PER_SECOND "
+                      "(1500/100=15s of 3000/100=30s)",
+                      "15s" in status_text and "30s" in status_text, status_text)
+
+                # ── 6d. Defensive: malformed/unexpected progress input must
+                #        never crash the callback or corrupt widget state — this
+                #        callback runs inside generate()'s own loop, so an
+                #        exception here would abort a real, possibly hour-long
+                #        transcription. ──────────────────────────────────────
+                bar_after_valid = app.progress_bar.get()
+                for bad_input, why in [
+                    ([], "empty list"),
+                    ([[1]], "missing total_frames entry"),
+                    ("not a tensor", "wrong type entirely"),
+                    (None, "None"),
+                    ([[0, 0]], "zero total_frames (would divide by zero "
+                               "without the guard)"),
+                    (42, "a bare int, not indexable at all"),
+                ]:
+                    raised = False
+                    try:
+                        cb(bad_input)
+                    except Exception:
+                        raised = True
+                    check(f"malformed progress input ({why}) does not raise "
+                          f"out of the callback",
+                          not raised)
+
+                (yield from pump_until_gen(lambda: True, timeout=1))
+                check("app widgets are still alive and progress_bar is "
+                      "unchanged after a batch of malformed progress input "
+                      "(no crash, no silently-corrupted state)",
+                      app.progress_bar.get() == bar_after_valid,
+                      app.progress_bar.get())
+
+            mock6_release.set()
+            ok3 = (yield from pump_until_gen(
+                lambda: len(mb_calls["showinfo"]) >= 1, timeout=30))
+            check("after every manual/malformed callback invocation above, "
+                  "the (parked, then released) run still completes normally "
+                  "end to end",
+                  ok3)
+        finally:
+            mock6_release.set()
+            ds.transcribe_audio_accurate = real_transcribe_6c
             app.diarize_var.set(False)
 
 
