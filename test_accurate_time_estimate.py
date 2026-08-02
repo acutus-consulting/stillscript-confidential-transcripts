@@ -26,7 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import DanScribe_v2 as ds  # noqa: E402
+import stillscript as ds  # noqa: E402
 import accurate_engine  # noqa: E402
 
 failures = []

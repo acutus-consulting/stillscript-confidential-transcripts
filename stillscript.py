@@ -22,17 +22,85 @@ except Exception:
     _HAS_KEYRING = False
 
 # ─────────────────────────────────────────────
+#  LEGACY USER-DATA MIGRATION (masterplan 4.1)
+# ─────────────────────────────────────────────
+# The product was renamed DanScribe -> StillScript in masterplan 4.1. Every
+# on-disk location the old name owned is listed here, oldest name first, so
+# an existing beta installation keeps its config, its API key fallback, its
+# log, its transcripts, and — most importantly — its multi-GB downloaded
+# models, instead of silently starting fresh.
+#
+# MOVE, not copy, deliberately:
+#   * ~/.danscribe_models/ holds the Accurate model (5.75 GiB) and the
+#     diarization model. Copying would need that much free space again, on
+#     machines already measured at 81% full, and would leave two copies of a
+#     6 GB tree that can silently diverge. os.replace()/rename on the same
+#     filesystem is atomic and instant regardless of size.
+#   * For the small files, a copy would leave the old and new config able to
+#     drift apart, with no rule about which wins. One-way move keeps exactly
+#     one source of truth.
+# Nothing is ever deleted: if a new-name target already exists, the old path
+# is left untouched rather than overwritten, so a partial or repeated
+# migration can never destroy newer data.
+#
+# Runs at import, BEFORE logging is configured, because the log file itself
+# is one of the things being moved — so it cannot use `logger`. Failures are
+# swallowed per-item: a migration problem must never stop the app from
+# starting, it just means that one item stays where it was.
+_LEGACY_PATH_MIGRATIONS = [
+    (Path.home() / ".danscribe_config.json", Path.home() / ".stillscript_config.json"),
+    (Path.home() / ".danscribe.log", Path.home() / ".stillscript.log"),
+    (Path.home() / ".danscribe_models", Path.home() / ".stillscript_models"),
+    (Path.home() / "Documents" / "DanScribe_Transcriptions",
+     Path.home() / "Documents" / "StillScript_Transcriptions"),
+]
+
+
+def migrate_legacy_user_data(migrations=None):
+    """Move any surviving DanScribe-named user data to its StillScript name.
+
+    Returns a list of (old, new) pairs actually migrated — empty on a fresh
+    install, which is the normal case and explicitly not an error.
+
+    Skips (leaving the old path alone) when the old path doesn't exist, or
+    when the new path already exists. Never overwrites, never deletes.
+    """
+    migrated = []
+    for old_path, new_path in (migrations if migrations is not None
+                               else _LEGACY_PATH_MIGRATIONS):
+        try:
+            if not old_path.exists() or new_path.exists():
+                continue
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(old_path, new_path)
+            migrated.append((old_path, new_path))
+        except Exception:
+            # Deliberately silent-but-safe: no logger yet (the log file is
+            # itself mid-migration), and a failure here must not block
+            # startup. The old data is still where it was.
+            pass
+    return migrated
+
+
+_MIGRATED_LEGACY_PATHS = migrate_legacy_user_data()
+
+# ─────────────────────────────────────────────
 #  LOGGING
 # ─────────────────────────────────────────────
 # Log to a file in the user's home dir. A windowed .exe has no console, so
 # print() output is invisible — logging is the only way to diagnose issues.
-LOG_PATH = os.path.join(Path.home(), ".danscribe.log")
+LOG_PATH = os.path.join(Path.home(), ".stillscript.log")
 logging.basicConfig(
     filename=LOG_PATH,
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
 )
-logger = logging.getLogger("danscribe")
+logger = logging.getLogger("stillscript")
+
+if _MIGRATED_LEGACY_PATHS:
+    # Now that logging exists, record what the pre-logging migration did.
+    for _old, _new in _MIGRATED_LEGACY_PATHS:
+        logger.info("Migrated legacy user data: %s -> %s", _old, _new)
 
 # ─────────────────────────────────────────────
 #  HELPER FUNCTIONS
@@ -73,8 +141,14 @@ def _ensure_bundled_binaries_on_path():
 # regardless of entry point.
 _ensure_bundled_binaries_on_path()
 
-CONFIG_PATH = os.path.join(Path.home(), ".danscribe_config.json")
-_KEYRING_SERVICE = "DanScribe"
+CONFIG_PATH = os.path.join(Path.home(), ".stillscript_config.json")
+_KEYRING_SERVICE = "StillScript"
+# Masterplan 4.1: the keyring entry is keyed by service name, so renaming the
+# service would orphan an existing user's stored API key just as surely as
+# moving a file would — it is user data, not a label. _get_api_key() below
+# falls back to reading the old service name and re-homes the key under the
+# new one on first use.
+_LEGACY_KEYRING_SERVICE = "DanScribe"
 _KEYRING_USER = "claude_api_key"
 
 # Claude model used for AI summaries. Kept as a single constant so it can be
@@ -91,6 +165,24 @@ def _get_api_key(config):
                 return key
         except Exception as e:
             logger.warning("Keyring read failed, falling back to config file: %s", e)
+        # Masterplan 4.1 — nothing under the new service name; an existing
+        # beta user's key is still filed under the old one. Re-home it so
+        # this lookup only happens once, but return it either way: a failed
+        # re-home must not cost the user their key.
+        try:
+            legacy_key = keyring.get_password(_LEGACY_KEYRING_SERVICE, _KEYRING_USER)
+            if legacy_key:
+                try:
+                    keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER, legacy_key)
+                    keyring.delete_password(_LEGACY_KEYRING_SERVICE, _KEYRING_USER)
+                    logger.info("Migrated the stored API key to the StillScript "
+                                "keyring entry.")
+                except Exception as e:
+                    logger.warning("Could not re-home the legacy keyring entry "
+                                   "(the key still works): %s", e)
+                return legacy_key
+        except Exception as e:
+            logger.warning("Legacy keyring read failed: %s", e)
     return config.get("api_key", "")
 
 
@@ -174,7 +266,7 @@ FAST_MODE_MODEL = "medium"
 
 # Human-readable engine label recorded in each transcript's provenance footer.
 # Phase 3 adds the accurate-mode engine (large-v3 + adapter revision SHA).
-FAST_MODE_ENGINE_LABEL = "DanScribe Fast — Whisper Medium"
+FAST_MODE_ENGINE_LABEL = "StillScript Fast — Whisper Medium"
 
 # Masterplan 2.11 — mode-scope notices shown next to the Mode buttons (section
 # 3 of the main window), swapped by _select_fast_mode()/_select_accurate_mode()
@@ -658,7 +750,7 @@ def _probe_audio_duration_seconds(path):
 class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("DanScribe AI — Settings")
+        self.title("StillScript — Settings")
         # Grown from the original 520x320 (masterplan 2.9) to fit the
         # reproducibility explanation below without clipping it — this window
         # is not scrollable and not user-resizable, so the geometry must
@@ -724,7 +816,7 @@ class SettingsWindow(ctk.CTkToplevel):
         _set_api_key(config, self.api_entry.get().strip())
         config["reproducibility"] = self.repro_var.get()
         save_config(config)
-        messagebox.showinfo("DanScribe AI", "Settings saved!")
+        messagebox.showinfo("StillScript", "Settings saved!")
         self.destroy()
 
 # ─────────────────────────────────────────────
@@ -732,7 +824,7 @@ class SettingsWindow(ctk.CTkToplevel):
 # ─────────────────────────────────────────────
 
 class CreditsWindow(ctk.CTkToplevel):
-    """Attribution surface for the models/datasets DanScribe builds on.
+    """Attribution surface for the models/datasets StillScript builds on.
 
     Driven entirely by the module-level CREDITS list — masterplan 2.7 added
     the fine-tuned Afrikaans model + dataset entries (CC-BY-4.0) by appending
@@ -740,15 +832,15 @@ class CreditsWindow(ctk.CTkToplevel):
     """
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("DanScribe AI — About / Credits")
+        self.title("StillScript — About / Credits")
         self.geometry("560x420")
         self.resizable(False, False)
         self.grab_set()
 
-        ctk.CTkLabel(self, text="ℹ️ About DanScribe AI", font=("Arial", 20, "bold")).pack(pady=(20, 4))
+        ctk.CTkLabel(self, text="ℹ️ About StillScript", font=("Arial", 20, "bold")).pack(pady=(20, 4))
         ctk.CTkLabel(
             self,
-            text="DanScribe is built on the following open-source work:",
+            text="StillScript is built on the following open-source work:",
             font=("Arial", 12),
             text_color="gray",
         ).pack(pady=(0, 10))
@@ -1133,10 +1225,10 @@ class AccurateTimeEstimateDialog(ctk.CTkToplevel):
 #  MAIN APPLICATION
 # ─────────────────────────────────────────────
 
-class DanScribeApp(ctk.CTk):
+class StillScriptApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("DanScribe AI — Professional v3.1.0")
+        self.title("StillScript Confidential Transcripts — v3.1.0")
         self.geometry("620x920")
         self.resizable(False, False)
 
@@ -1177,7 +1269,7 @@ class DanScribeApp(ctk.CTk):
             ctk.CTkLabel(banner, image=logo_img, text="").pack(side="left", padx=(10, 0))
             logo_loaded = True
         except Exception:
-            ctk.CTkLabel(banner, text="DanScribe AI", font=("Arial", 24, "bold")).pack(side="left", padx=10)
+            ctk.CTkLabel(banner, text="StillScript", font=("Arial", 24, "bold")).pack(side="left", padx=10)
 
         # Spacer
         ctk.CTkLabel(banner, text="", fg_color="transparent").pack(side="left", expand=True)
@@ -1463,7 +1555,7 @@ class DanScribeApp(ctk.CTk):
                     self._ui(self.name_btn.configure, state="normal")
                 self._ui(self.summarize_btn.configure, state="normal")
 
-                self._ui(messagebox.showinfo, "DanScribe AI", f"Transcription complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
+                self._ui(messagebox.showinfo, "StillScript", f"Transcription complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
 
             except Exception as e:
                 logger.error("Transcription failed: %s", e, exc_info=True)
@@ -1545,13 +1637,13 @@ class DanScribeApp(ctk.CTk):
         self.status_label.configure(text="Status: Ready")
         self.progress_bar.set(0)
         self.main_btn.configure(state="normal")
-        messagebox.showerror("DanScribe AI", f"Accurate mode could not start:\n{exc}")
+        messagebox.showerror("StillScript", f"Accurate mode could not start:\n{exc}")
 
     def _accurate_consent_check_failed(self, exc):
         self.status_label.configure(text="Status: Ready")
         self.main_btn.configure(state="normal")
         messagebox.showerror(
-            "DanScribe AI",
+            "StillScript",
             "Could not check the Accurate-mode download details. This usually "
             f"means there is no internet connection right now.\n\n{exc}\n\n"
             "Fast mode works offline."
@@ -1639,7 +1731,7 @@ class DanScribeApp(ctk.CTk):
         # AccurateModelDownloadError's message is already written for a
         # non-technical user (masterplan 2.1a.2) — shown as-is, no wrapping.
         can_retry = getattr(exc, "can_retry", False)
-        if can_retry and messagebox.askretrycancel("DanScribe AI", str(exc)):
+        if can_retry and messagebox.askretrycancel("StillScript", str(exc)):
             self._download_then_transcribe_accurate(
                 file_path, language_label, lang_code, whisper_task, do_diarize, num_speakers,
             )
@@ -1810,7 +1902,7 @@ class DanScribeApp(ctk.CTk):
             self._ui(self.summarize_btn.configure, state="normal")
 
             self._ui(
-                messagebox.showinfo, "DanScribe AI",
+                messagebox.showinfo, "StillScript",
                 f"Transcription complete!\nSaved to folder:\n{output_path}\n\n"
                 "Both .txt and .docx files created.",
             )
@@ -1864,7 +1956,7 @@ class DanScribeApp(ctk.CTk):
             # do exactly that — and _attach_speakers is a @staticmethod, so
             # going through self would silently reintroduce an instance
             # requirement and turn every such call into a fallback.
-            labelled = DanScribeApp._attach_speakers(segments, turns)
+            labelled = StillScriptApp._attach_speakers(segments, turns)
             if not labelled:
                 raise ValueError("no text could be attached to the speaker timeline")
             return labelled
@@ -2061,7 +2153,7 @@ Write the summary in the same language as the transcription."""
                 self._ui(self.output_box.delete, "1.0", "end")
                 self._ui(self.output_box.insert, "1.0", summary)
 
-                self._ui(messagebox.showinfo, "DanScribe AI", f"Summary complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
+                self._ui(messagebox.showinfo, "StillScript", f"Summary complete!\nSaved to folder:\n{output_path}\n\nBoth .txt and .docx files created.")
 
             except anthropic.AuthenticationError:
                 logger.warning("Claude authentication failed")
@@ -2095,7 +2187,7 @@ Write the summary in the same language as the transcription."""
             # Linux/Mac: prefer ~/Documents, fall back to ~/Downloads.
             docs = Path.home() / "Documents"
             base = docs if docs.exists() else Path.home() / "Downloads"
-        path = str(base / "DanScribe_Transcriptions")
+        path = str(base / "StillScript_Transcriptions")
         os.makedirs(path, exist_ok=True)
         return path
 
@@ -2121,7 +2213,9 @@ Write the summary in the same language as the transcription."""
             section.right_margin = Inches(1)
 
         # Title
-        title_text = "DanScribe AI — Meeting Summary" if doc_type == "summary" else "DanScribe AI — Transcript"
+        title_text = ("StillScript Confidential Transcripts — Meeting Summary"
+                      if doc_type == "summary"
+                      else "StillScript Confidential Transcripts — Transcript")
         title = doc.add_paragraph()
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = title.add_run(title_text)
@@ -2274,5 +2368,5 @@ if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()  # Required for the Windows .exe build
     ctk.set_appearance_mode("dark")
-    app = DanScribeApp()
+    app = StillScriptApp()
     app.mainloop()

@@ -1,4 +1,9 @@
-# DanScribe local config & logs (never commit — may contain an API key)
+# StillScript local config & logs (never commit — may contain an API key).
+# The .danscribe* names are kept alongside the new ones: masterplan 4.1
+# migrates them away on first launch, but a working copy touched by an
+# older build can still produce them, and they must never be committed.
+.stillscript_config.json
+.stillscript.log
 .danscribe_config.json
 .danscribe.log
 
@@ -15,7 +20,7 @@ build/
 dist/
 *.spec
 
-# Built executables. DanScribe_v3.exe is ~330 MB and was sitting untracked next
+# Built executables. StillScript.exe is ~330 MB and was sitting untracked next
 # to the source; one `git add -A` would have committed it permanently.
 *.exe
 

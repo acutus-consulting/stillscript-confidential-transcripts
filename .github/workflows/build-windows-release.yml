@@ -1,12 +1,12 @@
 name: Build Windows executable
 
-# Builds the DanScribe_v3.exe binary on a real Windows runner (PyInstaller
+# Builds the StillScript.exe binary on a real Windows runner (PyInstaller
 # cannot cross-compile) and attaches it to the matching GitHub release.
 #
 # NOTE: EXE_NAME below is the *output artifact* name shown on the release
-# page, independent of the DanScribe_v2.py source filename. Bump it on the
-# next major version release (in this file AND in DanScribe_v2.iss's
-# MyAppExeName) so the download always matches the release it's attached to.
+# page, independent of the stillscript.py source filename. Keep it in step
+# with stillscript.iss's MyAppExeName so the download always matches the
+# release it's attached to. Renamed from DanScribe_v3 in masterplan 4.1.
 #
 # Runs automatically when a version tag (vX.Y.Z) is pushed, or manually via
 # the Actions tab / `gh workflow run` for an existing tag.
@@ -25,7 +25,7 @@ permissions:
   contents: write
 
 env:
-  EXE_NAME: DanScribe_v3
+  EXE_NAME: StillScript
 
 jobs:
   build:
@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           pyinstaller --onefile --windowed --name "$EXE_NAME" \
-            --icon "danscribe.ico" \
+            --icon "stillscript.ico" \
             --add-data "logo.jpg;." \
             --add-binary "ffmpeg.exe;." \
             --add-binary "ffprobe.exe;." \
@@ -103,7 +103,7 @@ jobs:
             --collect-all numba \
             --collect-all llvmlite \
             --collect-submodules sklearn \
-            DanScribe_v2.py
+            stillscript.py
 
       - name: Ensure a GitHub Release exists for this tag
         # `gh release upload` requires a Release object, not just a tag — a

@@ -179,7 +179,7 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-logger = logging.getLogger("danscribe.accurate.download")
+logger = logging.getLogger("stillscript.accurate.download")
 
 # The Accurate-mode error hierarchy lives in accurate_guard so the UI can import
 # and handle these without pulling in torch/transformers.
@@ -236,12 +236,14 @@ REQUIRED_MODEL_FILES = ("config.json", "model.safetensors", "preprocessor_config
 # ─────────────────────────────────────────────
 #  WHERE IT GOES
 # ─────────────────────────────────────────────
-# DanScribe keeps its per-user state as dot-entries directly in the home
-# directory — `~/.danscribe.log` and `~/.danscribe_config.json` (DanScribe_v2.py
-# lines 28 and 75). This follows that convention rather than inventing a second
-# one: `~/.danscribe_models/` matches the `~/.danscribe*` glob that masterplan
-# 4.1 already has to sweep when the product is renamed to StillScript, so the
-# rename stays one coordinated change instead of two.
+# StillScript keeps its per-user state as dot-entries directly in the home
+# directory — `~/.stillscript.log` and `~/.stillscript_config.json`. This
+# follows that convention rather than inventing a second one, so all of the
+# app's per-user state lives together and moves together. Masterplan 4.1
+# renamed all three from their original `~/.danscribe*` names in one
+# coordinated step; see migrate_legacy_user_data() in the main module for the
+# one-time move that carries an existing installation's data (including this
+# multi-GB directory) across.
 #
 # Deliberately NOT the huggingface_hub shared cache (~/.cache/huggingface): the
 # app must be able to say exactly where the 5.75 GiB went and delete it on
@@ -582,7 +584,7 @@ def default_model_root():
     override = (os.environ.get(MODEL_ROOT_ENV_VAR) or "").strip()
     if override:
         return Path(override)
-    return Path.home() / ".danscribe_models"
+    return Path.home() / ".stillscript_models"
 
 
 def managed_model_dir():
@@ -1560,7 +1562,7 @@ def ensure_accurate_model(
     Arguments
       model_dir          Where the model should be. Defaults to
                          STILLSCRIPT_ACCURATE_MODEL_DIR, then the managed
-                         location (~/.danscribe_models/accurate-af-large-v3).
+                         location (~/.stillscript_models/accurate-af-large-v3).
       progress_callback  Called with DownloadProgress objects, roughly twice a
                          second. Optional. Calls are never concurrent, so the
                          hook may assume it is not re-entered; during the

@@ -1,4 +1,4 @@
-# DanScribe AI — runtime dependencies
+# StillScript Confidential Transcripts — runtime dependencies
 # Install with:  pip install -r requirements.txt
 #
 # Versions are pinned to a known-working set (the versions the app is

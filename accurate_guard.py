@@ -115,7 +115,7 @@ except ImportError:  # pragma: no cover - only if the generated file is missing
     # degrade into "no checks performed".
     ACCURATE_FINGERPRINT = None
 
-logger = logging.getLogger("danscribe.accurate.guard")
+logger = logging.getLogger("stillscript.accurate.guard")
 
 # Minimum sampled relative delta from base large-v3 for a "finetuned" probe.
 # See the note above on why 1e-3 is the right order of magnitude.

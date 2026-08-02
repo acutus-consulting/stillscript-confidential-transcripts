@@ -42,7 +42,7 @@ import weakref
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-import DanScribe_v2 as ds  # noqa: E402
+import stillscript as ds  # noqa: E402
 import accurate_engine  # noqa: E402
 from accurate_guard import AccurateEngineUnavailable  # noqa: E402
 
@@ -189,7 +189,7 @@ def restore_from_pretrained():
 # Use a directory that passes check_model_available() so we actually reach
 # the from_pretrained() calls the guard sits in front of. The real downloaded
 # model directory does this without needing a throwaway fixture.
-REAL_MODEL_DIR = os.path.expanduser("~/.danscribe_models/accurate-af-large-v3")
+REAL_MODEL_DIR = os.path.expanduser("~/.stillscript_models/accurate-af-large-v3")
 if not os.path.isdir(REAL_MODEL_DIR):
     print("  [SKIP] sections 4-6 need the real downloaded Accurate model "
         f"({REAL_MODEL_DIR}) — not faking a multi-GB directory just to pass.")

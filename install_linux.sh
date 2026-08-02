@@ -1,13 +1,17 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-#  DanScribe AI — Linux Installer (Ubuntu / Linux Mint)
+#  StillScript Confidential Transcripts — Linux Installer (Ubuntu / Linux Mint)
 #  Outeur: Danie
 # ─────────────────────────────────────────────────────────────
 
 set -e
 
-APP_NAME="DanScribe AI"
-APP_DIR="$HOME/.local/share/danscribe-ai"
+APP_NAME="StillScript"
+APP_DIR="$HOME/.local/share/stillscript"
+# Masterplan 4.1: the pre-rename install location. Removed at the end of a
+# successful install so an old launcher/desktop entry cannot keep pointing at
+# a stale copy of the app.
+LEGACY_APP_DIR="$HOME/.local/share/danscribe-ai"
 BIN_DIR="$HOME/.local/bin"
 ICON_DIR="$HOME/.local/share/icons"
 DESKTOP_DIR="$HOME/.local/share/applications"
@@ -15,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
-echo "║        DanScribe AI — Linux Installer        ║"
+echo "║      StillScript — Linux Installer           ║"
 echo "║   Made in South Africa · for South Africans  ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
@@ -58,7 +62,7 @@ mkdir -p "$DESKTOP_DIR"
 
 # ── Stap 5: Kopieer app-lêers ──
 echo "► Copying application files..."
-cp "$SCRIPT_DIR/DanScribe_v2.py" "$APP_DIR/DanScribe_v2.py"
+cp "$SCRIPT_DIR/stillscript.py" "$APP_DIR/stillscript.py"
 cp "$SCRIPT_DIR/accurate_engine.py" "$APP_DIR/accurate_engine.py"
 cp "$SCRIPT_DIR/requirements.txt" "$APP_DIR/requirements.txt"
 
@@ -101,32 +105,32 @@ echo "  Python packages installed ✓"
 
 # ── Stap 7: Skep uitvoerbare skrip ──
 echo "► Creating launcher script..."
-cat > "$BIN_DIR/danscribe-ai" << LAUNCHER
+cat > "$BIN_DIR/stillscript" << LAUNCHER
 #!/bin/bash
 cd "$APP_DIR"
-"$APP_DIR/venv/bin/python3" "$APP_DIR/DanScribe_v2.py" "\$@"
+"$APP_DIR/venv/bin/python3" "$APP_DIR/stillscript.py" "\$@"
 LAUNCHER
-chmod +x "$BIN_DIR/danscribe-ai"
-echo "  Launcher created at $BIN_DIR/danscribe-ai ✓"
+chmod +x "$BIN_DIR/stillscript"
+echo "  Launcher created at $BIN_DIR/stillscript ✓"
 
 # ── Stap 8: Skep .desktop lêer vir Toepassingsmenu ──
 echo "► Creating desktop entry (Applications menu)..."
 
 # Gebruik logo as ikoon as dit beskikbaar is, anders 'n standaard ikoon
 if [ -f "$APP_DIR/logo.jpg" ]; then
-    cp "$APP_DIR/logo.jpg" "$ICON_DIR/danscribe-ai.jpg"
-    ICON_PATH="$ICON_DIR/danscribe-ai.jpg"
+    cp "$APP_DIR/logo.jpg" "$ICON_DIR/stillscript.jpg"
+    ICON_PATH="$ICON_DIR/stillscript.jpg"
 else
     ICON_PATH="audio-x-generic"
 fi
 
-cat > "$DESKTOP_DIR/danscribe-ai.desktop" << DESKTOP
+cat > "$DESKTOP_DIR/stillscript.desktop" << DESKTOP
 [Desktop Entry]
 Version=2.0
 Type=Application
-Name=DanScribe AI
-Comment=Professional audio transcription — Made in South Africa
-Exec=$BIN_DIR/danscribe-ai
+Name=StillScript
+Comment=Confidential transcripts — professional audio transcription
+Exec=$BIN_DIR/stillscript
 Icon=$ICON_PATH
 Terminal=false
 Categories=AudioVideo;Audio;Utility;
@@ -134,15 +138,28 @@ Keywords=transcription;audio;whisper;afrikaans;south africa;
 StartupNotify=true
 DESKTOP
 
-chmod +x "$DESKTOP_DIR/danscribe-ai.desktop"
+chmod +x "$DESKTOP_DIR/stillscript.desktop"
 echo "  Desktop entry created ✓"
 
 # ── Stap 9: Voeg ~/.local/bin by PATH as dit nie daar is nie ──
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo "" >> "$HOME/.bashrc"
-    echo "# Added by DanScribe AI installer" >> "$HOME/.bashrc"
+    echo "# Added by StillScript installer" >> "$HOME/.bashrc"
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
     echo "  Added ~/.local/bin to PATH in .bashrc ✓"
+fi
+
+# ── Stap 10: Ruim die pre-hernoem-installasie op (masterplan 4.1) ──
+# Only after everything above succeeded (set -e guarantees that). The user's
+# DATA is not here — config, logs, models and transcripts live in $HOME and
+# are migrated by stillscript.py itself on first launch. This directory holds
+# only a copy of the app code and its venv, so removing it strands nothing.
+if [ -d "$LEGACY_APP_DIR" ]; then
+    echo "► Removing the previous DanScribe installation directory..."
+    rm -rf "$LEGACY_APP_DIR"
+    rm -f "$BIN_DIR/danscribe-ai" "$DESKTOP_DIR/danscribe-ai.desktop" \
+          "$ICON_DIR/danscribe-ai.jpg"
+    echo "  Old install removed (your settings, models and transcripts are kept) ✓"
 fi
 
 # ── Klaar ──
@@ -151,10 +168,10 @@ echo "╔═══════════════════════�
 echo "║           Installation Complete! ✓           ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
-echo "  You can now launch DanScribe AI:"
-echo "  • From the Applications menu (search 'DanScribe')"
-echo "  • Or from the terminal: danscribe-ai"
+echo "  You can now launch StillScript:"
+echo "  • From the Applications menu (search 'StillScript')"
+echo "  • Or from the terminal: stillscript"
 echo ""
 echo "  Output files are saved to:"
-echo "  ~/Documents/DanScribe_Transcriptions/"
+echo "  ~/Documents/StillScript_Transcriptions/"
 echo ""

@@ -1,4 +1,4 @@
-"""UI wiring tests for Accurate mode (masterplan 2.3) — DanScribe_v2.py.
+"""UI wiring tests for Accurate mode (masterplan 2.3) — stillscript.py.
 
 Drives the REAL Tkinter/customtkinter app under a real X display (Xvfb via
 `xvfb-run`, NOT whatever :0 happens to be — that may be a real desktop
@@ -22,7 +22,7 @@ WHAT IS REAL vs MOCKED, section by section (each section says so again inline):
         succeed), not to re-prove the function itself.
   4     Subsequent-activation short-circuit: uses the REAL, already-downloaded,
         already-verified model already on this machine
-        (~/.danscribe_models/accurate-af-large-v3, left on disk by earlier
+        (~/.stillscript_models/accurate-af-large-v3, left on disk by earlier
         real-download testing in this project) and the REAL
         ensure_accurate_model() — nothing about the download path is mocked.
         Only transcribe_audio_accurate() is mocked, since Wave 2.1's own test
@@ -65,7 +65,7 @@ if not os.environ.get("DISPLAY"):
     print("No DISPLAY set — run this under `xvfb-run -a`, not directly.")
     sys.exit(1)
 
-import DanScribe_v2 as ds  # noqa: E402
+import stillscript as ds  # noqa: E402
 import accurate_model_download as amd  # noqa: E402
 from tkinter import filedialog, messagebox  # noqa: E402
 
@@ -213,7 +213,7 @@ BENCH_CLIP = os.path.expanduser("~/whisper_afrikaans_spike/bench_30s.wav")
 # ════════════════════════════════════════════════════════════════════════════
 print("=== 1. The app constructs, and the Accurate button is live ===")
 # ════════════════════════════════════════════════════════════════════════════
-app = ds.DanScribeApp()
+app = ds.StillScriptApp()
 app.withdraw()  # off-screen; state and event handling are unaffected
 app.after(20, _auto_confirm_time_estimate_watcher)
 
@@ -232,7 +232,7 @@ check("the Accurate button's own label reads correctly",
 # ════════════════════════════════════════════════════════════════════════════
 print("\n=== 1b. Settings window: reproducibility control (masterplan 2.9) ===")
 # ════════════════════════════════════════════════════════════════════════════
-# Touches the REAL ~/.danscribe_config.json (SettingsWindow reads/writes it
+# Touches the REAL ~/.stillscript_config.json (SettingsWindow reads/writes it
 # directly, same as production) — snapshot and restore exactly, same care as
 # section 4's temperature-wiring test below.
 _had_config_1b = os.path.exists(ds.CONFIG_PATH)
@@ -338,7 +338,7 @@ check("Accurate button still enabled after showing its own scope notice",
       app.accurate_btn.cget("state") != "disabled")
 
 # The runs below save real transcript files into the user's real output
-# directory (~/Documents/DanScribe_Transcriptions), same as the shipped app
+# directory (~/Documents/StillScript_Transcriptions), same as the shipped app
 # would. Snapshot what's there BEFORE any accurate-mode run, so only files
 # this test run itself created are removed at the end — nothing pre-existing
 # is ever touched.
@@ -615,7 +615,7 @@ def test_sequence():
 
     if not real_model_ready:
         print("  [SKIP] no real downloaded model on this machine "
-              "(~/.danscribe_models/accurate-af-large-v3) — section 4 needs it, "
+              "(~/.stillscript_models/accurate-af-large-v3) — section 4 needs it, "
               "not faking a multi-GB directory just to pass.")
     else:
         real_target_dir = str(amd.managed_model_dir())
@@ -652,7 +652,7 @@ def test_sequence():
             # ── Masterplan 2.9: the reproducibility Settings choice must reach
             #    this exact real call site as the correct temperature value —
             #    not just render correctly in the Settings window. Touches the
-            #    REAL ~/.danscribe_config.json, so the original content (or its
+            #    REAL ~/.stillscript_config.json, so the original content (or its
             #    absence) is snapshotted and restored below, not left dirty.
             import accurate_engine
             had_config = os.path.exists(ds.CONFIG_PATH)

@@ -3,7 +3,7 @@
 WHAT IS AND IS NOT HERE
 ────────────────────────
 Section 5 uses the REAL downloaded Accurate model directory
-(~/.danscribe_models/accurate-af-large-v3) to run a REAL, cheap (probe-mode,
+(~/.stillscript_models/accurate-af-large-v3) to run a REAL, cheap (probe-mode,
 ~1s) verify_merged_model() call and read its REAL completion stamp — so the
 model-identity fields (repo_id / revision / layout) and the guard-mode label
 are proven against real data, not fabricated. It does NOT load the ~6 GB
@@ -29,7 +29,7 @@ import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import DanScribe_v2 as ds  # noqa: E402
+import stillscript as ds  # noqa: E402
 import accurate_engine  # noqa: E402
 import accurate_model_download as amd  # noqa: E402
 
@@ -44,7 +44,7 @@ def check(label, condition, detail=""):
     return condition
 
 
-REAL_MODEL_DIR = os.path.expanduser("~/.danscribe_models/accurate-af-large-v3")
+REAL_MODEL_DIR = os.path.expanduser("~/.stillscript_models/accurate-af-large-v3")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -308,7 +308,7 @@ check("credit appears regardless of which HF layout/revision was actually "
 print("\n=== 7. Provenance stays export-layer-only — current_transcript is "
       "never touched by it (structural check on the actual source) ===")
 # ════════════════════════════════════════════════════════════════════════════
-src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "DanScribe_v2.py"),
+src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "stillscript.py"),
           encoding="utf-8").read()
 
 assignments = re.findall(r"self\.current_transcript\s*=\s*(.+)", src)

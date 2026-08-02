@@ -1,6 +1,28 @@
-# DanScribe AI — Professional Edition v3.1.0
+# StillScript Confidential Transcripts — v3.1.0
 
-**DanScribe AI** is a desktop transcription tool powered by OpenAI's Whisper engine. Built in South Africa, for South Africans. It converts audio recordings into text across all 11 official South African languages, with speaker identification and AI-powered meeting summaries via Claude.
+**StillScript Confidential Transcripts** is a desktop transcription tool powered by OpenAI's Whisper engine. Built in South Africa, for South Africans. It converts audio recordings into text across all 11 official South African languages, with speaker identification and AI-powered meeting summaries via Claude.
+
+---
+
+## Upgrading from DanScribe
+
+This product was previously called **DanScribe AI**. If you have an older
+version installed, the first launch after upgrading moves your existing data
+to its new location automatically — nothing is lost and nothing needs to be
+re-downloaded:
+
+| Was | Is now |
+|---|---|
+| `~/.danscribe_config.json` | `~/.stillscript_config.json` |
+| `~/.danscribe.log` | `~/.stillscript.log` |
+| `~/.danscribe_models/` | `~/.stillscript_models/` |
+| `~/Documents/DanScribe_Transcriptions/` | `~/Documents/StillScript_Transcriptions/` |
+
+Your saved Claude API key moves across too. In particular, the downloaded
+Accurate-mode language model (about 5.8 GB) is **moved, not re-downloaded**.
+
+If a file already exists under the new name, the old one is left alone rather
+than overwritten — so nothing you have is ever replaced by older data.
 
 ---
 
@@ -8,7 +30,7 @@
 
 - **Two transcription modes** — the model picker is replaced by a **Fast (Vinnig)** / **Accurate (Akkuraat)** mode selector. Fast (the default) runs the Whisper Medium engine with the improved Afrikaans prompt. Accurate is present but not yet enabled (coming in a later release).
 - **Transcript provenance** — every `.txt` and `.docx` now carries an audit footer recording which engine produced it (model + version, mode, language setting, task, and timestamp) — useful for professional and legal record-keeping.
-- **Credits / About surface** — a new About dialog attributing the open-source work DanScribe builds on (OpenAI Whisper).
+- **Credits / About surface** — a new About dialog attributing the open-source work StillScript builds on (OpenAI Whisper).
 - **Lower memory on long recordings** — speaker identification on long files (20 min+) now streams audio from a temporary file instead of loading the whole recording into RAM, cutting peak memory on multi-hour recordings from gigabytes to roughly constant. Short files are unchanged.
 - **Self-contained Windows build** — the Windows `.exe` now bundles ffmpeg, so there is no separate install step; CI produces a CPU-only build with all model/library assets included.
 
@@ -23,7 +45,7 @@
 - **Fixed a startup crash** — the app could fail to launch due to a stray reference to an undefined function.
 - **Secure API key storage** — the Claude API key now lives in your OS keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service) instead of a plaintext file; falls back to a permission-restricted file if no keyring is available.
 - **AI Summary model updated** — now uses Claude Opus 4.8.
-- **Diagnostic logging** — a log file (`~/.danscribe.log`) now captures errors and warnings for easier troubleshooting.
+- **Diagnostic logging** — a log file (`~/.stillscript.log`) now captures errors and warnings for easier troubleshooting.
 - **More robust error handling** — clearer messages for authentication failures, rate limits, and API errors; corrupted settings files no longer crash the app.
 - **Thread-safety fixes** — background transcription/summary work no longer touches the UI directly, preventing rare crashes and freezes.
 - **File validation** — the app now checks that a selected audio file actually exists and isn't empty before processing.
@@ -94,7 +116,7 @@ pip install -r requirements.txt
 ## Running from Source
 
 ```bash
-python DanScribe_v2.py
+python stillscript.py
 ```
 
 ## Building the EXE
@@ -103,32 +125,32 @@ Windows builds are produced automatically by CI — see
 `.github/workflows/build-windows-release.yml` (PyInstaller cannot
 cross-compile, so the build runs on a Windows runner). It installs CPU-only
 PyTorch, bundles a static ffmpeg, collects the Whisper/librosa assets, builds
-a self-contained one-file exe, and attaches `DanScribe_v3.exe` to the matching
+a self-contained one-file exe, and attaches `StillScript.exe` to the matching
 GitHub release. It runs on every pushed `vX.Y.Z` tag.
 
 To build locally on a Windows machine, mirror that workflow's `pyinstaller`
 invocation (CPU torch + static ffmpeg staged alongside, then the
 `--collect-all`/`--add-binary` flags). The compiled executable lands in
-`dist/` as `DanScribe_v3.exe`.
+`dist/` as `StillScript.exe`.
 
 ## Claude API Key
 
 To use the AI Summary feature:
 1. Register at [console.anthropic.com](https://console.anthropic.com)
 2. Create an API key
-3. Open DanScribe AI → ⚙️ Settings → paste your key
+3. Open StillScript → ⚙️ Settings → paste your key
 
 Your key is stored locally on your device only. When available, it is saved in
 your operating system's secure keyring (Windows Credential Manager, macOS
 Keychain, or the Linux Secret Service). If no keyring backend is present, it
-falls back to a permission-restricted config file (`~/.danscribe_config.json`,
+falls back to a permission-restricted config file (`~/.stillscript_config.json`,
 readable only by your user account).
 
 ## Output
 
 All files are saved to:
 ```
-C:\Users\YourName\Downloads\DanScribe_Transcriptions\
+C:\Users\YourName\Downloads\StillScript_Transcriptions\
 ```
 
 Each transcription produces:

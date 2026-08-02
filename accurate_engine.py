@@ -2,7 +2,7 @@
 
 This is the engine behind "Akkuraat" (Accurate) mode. It is deliberately kept
 in its own module, separate from the Fast (Whisper Medium) path in
-DanScribe_v2.py, so the two engines cannot interfere with one another.
+stillscript.py, so the two engines cannot interfere with one another.
 
 ═══════════════════════════════════════════════════════════════════════════
  CRITICAL — DO NOT ROUTE THIS MODEL THROUGH CTranslate2 / faster-whisper
@@ -52,7 +52,7 @@ import os
 import logging
 from pathlib import Path
 
-logger = logging.getLogger("danscribe.accurate")
+logger = logging.getLogger("stillscript.accurate")
 
 # ─────────────────────────────────────────────
 #  MODEL LOCATION

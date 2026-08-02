@@ -1,7 +1,7 @@
 """Speaker diarization engine — pyannote.audio + speaker-diarization-community-1.
 
 This replaces the pitch/MFCC + fixed-k KMeans backend that used to live inline in
-DanScribe_v2._diarize(). Diarization is shared infrastructure: BOTH Fast mode and
+stillscript._diarize(). Diarization is shared infrastructure: BOTH Fast mode and
 Accurate mode call it, so this module is deliberately independent of either engine.
 
 ═══════════════════════════════════════════════════════════════════════════
@@ -67,7 +67,7 @@ import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger("danscribe.diarization")
+logger = logging.getLogger("stillscript.diarization")
 
 # Mirror of pyannote/speaker-diarization-community-1 (CC-BY-4.0, unmodified).
 REPO_ID = "DanieClar/stillscript-speaker-diarization-community-1"
@@ -136,7 +136,7 @@ def resolve_model_dir(model_dir=None):
         if (bundled / "config.yaml").is_file():
             return str(bundled)
 
-    return str(Path.home() / ".danscribe_models" / _MANAGED_DIR_NAME)
+    return str(Path.home() / ".stillscript_models" / _MANAGED_DIR_NAME)
 
 
 def _sha256(path):
@@ -271,7 +271,7 @@ def _load_waveform(audio_path):
     import torch
     import soundfile as sf
 
-    fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="danscribe_diar_")
+    fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="stillscript_diar_")
     os.close(fd)
     try:
         subprocess.run(

@@ -32,7 +32,7 @@ SAFETY
 Several tests exercise deletion of the managed model directory. STILLSCRIPT_MODEL_ROOT
 is redirected to a temp directory before anything else imports the module, and
 the redirection is asserted before the first destructive test runs. A real
-download in ~/.danscribe_models must never be at risk from running the tests.
+download in ~/.stillscript_models must never be at risk from running the tests.
 """
 
 import copy
@@ -89,9 +89,9 @@ def reset_managed():
 print("\n=== 1. Paths follow the app's existing convention ===")
 # ════════════════════════════════════════════════════════════════════════════
 saved_root = os.environ.pop("STILLSCRIPT_MODEL_ROOT")
-check("default root is ~/.danscribe_models (matches ~/.danscribe.log / "
-      "~/.danscribe_config.json, so masterplan 4.1's rename sweep catches it)",
-      str(amd.default_model_root()) == os.path.join(os.path.expanduser("~"), ".danscribe_models"),
+check("default root is ~/.stillscript_models (matches ~/.stillscript.log / "
+      "~/.stillscript_config.json, so masterplan 4.1's rename sweep catches it)",
+      str(amd.default_model_root()) == os.path.join(os.path.expanduser("~"), ".stillscript_models"),
       str(amd.default_model_root()))
 os.environ["STILLSCRIPT_MODEL_ROOT"] = saved_root
 
