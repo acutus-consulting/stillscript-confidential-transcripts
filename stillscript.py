@@ -9,7 +9,7 @@ import time
 import webbrowser
 from pathlib import Path
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageTk
 import whisper
 from tkinter import filedialog, messagebox
 import anthropic
@@ -904,9 +904,27 @@ class CreditsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("StillScript — About / Credits")
-        self.geometry("560x420")
+        # Grown from 560x420 to fit masterplan 4.2's logo lockup at the top
+        # without clipping the Close button below — this window is not
+        # scrollable/resizable, so the geometry must genuinely be tall
+        # enough. Measured (not guessed) via winfo_reqheight() under Xvfb:
+        # real content needs 566px; 600 leaves real, checked headroom.
+        self.geometry("560x600")
         self.resizable(False, False)
         self.grab_set()
+
+        # Masterplan 4.2 — the real mark, primary horizontal lockup, at the
+        # brand guide's own "generous room" size (page 2). Same asset the
+        # main window's banner uses, just a larger height, so the lockup's
+        # own aspect ratio (never stretched) still holds.
+        try:
+            img = Image.open(resource_path("stillscript_logo_horizontal_white.png"))
+            logo_h = 90
+            logo_w = round(logo_h * img.width / img.height)
+            about_logo = ctk.CTkImage(light_image=img, dark_image=img, size=(logo_w, logo_h))
+            ctk.CTkLabel(self, image=about_logo, text="").pack(pady=(20, 4))
+        except Exception as e:
+            logger.warning("About-window logo load failed (non-fatal): %s", e)
 
         ctk.CTkLabel(self, text="ℹ️ About StillScript", font=("Arial", 20, "bold")).pack(pady=(20, 4))
         ctk.CTkLabel(
@@ -1308,7 +1326,35 @@ class StillScriptApp(ctk.CTk):
         self.diarized_segments = None
         self.speaker_name_map = {}
 
+        self._set_app_icon()
         self._build_ui()
+
+    def _set_app_icon(self):
+        """Window/taskbar icon (masterplan 4.2) — the real StillScript mark,
+        symbol-only on its Ink Navy ground, exactly as the brand guide's own
+        "App Icons" page specifies for 16-256px contexts (no wordmark at
+        these sizes). `iconphoto(True, ...)` is used rather than the
+        Windows-only `iconbitmap(".ico")` so this works identically on every
+        platform this app runs on during development, not just the shipped
+        Windows build; `True` also makes every Toplevel opened from this
+        window (Settings, About, etc.) inherit the same icon automatically.
+        Sizes 16/32/48/256 mirror the exact set the brand guide illustrates
+        on its own "App Icons" page — Tk picks whichever fits each context.
+        Best-effort: a missing/corrupt icon file must never stop the app
+        from starting.
+        """
+        try:
+            # Kept as an attribute, not a local: Tk does not itself retain a
+            # reference to a PhotoImage passed to iconphoto(), so a
+            # locals-only list would be garbage-collected and the icon would
+            # silently vanish once __init__ returns.
+            self._app_icon_images = [
+                ImageTk.PhotoImage(Image.open(resource_path(f"stillscript_icon_{size}.png")))
+                for size in (16, 32, 48, 256)
+            ]
+            self.iconphoto(True, *self._app_icon_images)
+        except Exception as e:
+            logger.warning("App icon load failed (non-fatal): %s", e)
 
     # ── THREAD-SAFE UI UPDATES ──────────────
 
@@ -1332,11 +1378,20 @@ class StillScriptApp(ctk.CTk):
         banner = ctk.CTkFrame(self, fg_color="transparent")
         banner.pack(pady=(10, 0), fill="x", padx=20)
 
-        # Logo (left)
+        # Logo (left) — masterplan 4.2: the real StillScript mark (brand
+        # guide's primary horizontal lockup, white/reversed variant for this
+        # dark-mode ground — see brand/StillScript_Brand_Identity.pdf page 2
+        # "primary lockup ... any use with generous room" and page 5's
+        # navy/black/cream/white-grounds-only rule; this dark CTk theme's
+        # near-black ground qualifies). Height fixed, width computed from the
+        # asset's own aspect ratio so it is never stretched off-ratio (a
+        # brand-guide "Don't").
         logo_loaded = False
         try:
-            img = Image.open(resource_path("logo.jpg"))
-            logo_img = ctk.CTkImage(light_image=img, dark_image=img, size=(130, 130))
+            img = Image.open(resource_path("stillscript_logo_horizontal_white.png"))
+            logo_h = 70
+            logo_w = round(logo_h * img.width / img.height)
+            logo_img = ctk.CTkImage(light_image=img, dark_image=img, size=(logo_w, logo_h))
             ctk.CTkLabel(banner, image=logo_img, text="").pack(side="left", padx=(10, 0))
             logo_loaded = True
         except Exception:

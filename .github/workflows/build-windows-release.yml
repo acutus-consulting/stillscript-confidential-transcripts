@@ -94,7 +94,11 @@ jobs:
         run: |
           pyinstaller --onefile --windowed --name "$EXE_NAME" \
             --icon "stillscript.ico" \
-            --add-data "logo.jpg;." \
+            --add-data "stillscript_logo_horizontal_white.png;." \
+            --add-data "stillscript_icon_16.png;." \
+            --add-data "stillscript_icon_32.png;." \
+            --add-data "stillscript_icon_48.png;." \
+            --add-data "stillscript_icon_256.png;." \
             --add-binary "ffmpeg.exe;." \
             --add-binary "ffprobe.exe;." \
             --collect-all whisper \
