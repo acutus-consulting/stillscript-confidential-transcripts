@@ -208,8 +208,9 @@ def _set_api_key(config, api_key):
 def load_config():
     # "Consistent" default (masterplan 1.4/2.9): fits the audit/provenance
     # promise Accurate mode is built around — a legal/clinical user should be
-    # able to re-run a recording and get the same transcript back. Fast mode
-    # never reads this key; it has no reproducibility choice of its own.
+    # able to re-run a recording and get the same transcript back. Masterplan
+    # 3.2 extended this same key to Fast mode too, so both modes share one
+    # Settings choice and one persisted value rather than two parallel ones.
     defaults = {"api_key": "", "last_language": "Auto-Detect", "reproducibility": "Consistent"}
     if not os.path.exists(CONFIG_PATH):
         return defaults
@@ -268,6 +269,39 @@ FAST_MODE_MODEL = "medium"
 # Phase 3 adds the accurate-mode engine (large-v3 + adapter revision SHA).
 FAST_MODE_ENGINE_LABEL = "StillScript Fast — Whisper Medium"
 
+# Masterplan 3.2 — Fast mode's reproducibility axis. openai-whisper's own
+# transcribe() already runs a temperature-fallback ladder by default (retrying
+# low-confidence segments at progressively higher, sampling temperatures) —
+# verified (not assumed) to be the exact tuple below, openai-whisper 20250625's
+# own default, identical in shape to accurate_engine.TEMPERATURE_BEST_EFFORT.
+# transcribe_audio() never overrode it before this item, so Fast mode has
+# silently run in "Best effort" mode on every transcription, with no way to
+# pin it to a single, deterministic temperature=0.0 ("Consistent") — exactly
+# the same axis Golf 2.8/2.9 investigated for Accurate mode, just unexposed
+# here. Defined locally rather than imported from accurate_engine: Fast
+# mode's runtime must never depend on that module (see
+# transcribe_audio_accurate()'s docstring below) even though the values
+# happen to be identical.
+FAST_TEMPERATURE_CONSISTENT = 0.0
+FAST_TEMPERATURE_BEST_EFFORT = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+
+
+def _describe_fast_reproducibility(temperature):
+    """Human label for the temperature value transcribe_audio() actually
+    decoded with (masterplan 3.2) — mirrors
+    accurate_engine._describe_reproducibility() exactly, including its
+    "derive from the real value actually used, never re-derive from
+    Settings" principle (masterplan 2.6/2.9): if a future caller ever passes
+    some other temperature, provenance must say so honestly rather than
+    mislabelling it as one of the two named Settings choices it isn't.
+    """
+    if temperature == FAST_TEMPERATURE_CONSISTENT:
+        return "Consistent"
+    if temperature == FAST_TEMPERATURE_BEST_EFFORT:
+        return "Best effort"
+    return f"Custom (temperature={temperature!r})"
+
+
 # Masterplan 2.11 — mode-scope notices shown next to the Mode buttons (section
 # 3 of the main window), swapped by _select_fast_mode()/_select_accurate_mode()
 # so whichever mode is active always has its own scope reminder visible. Not a
@@ -299,42 +333,55 @@ ACCURATE_MODE_SCOPE_NOTE = (
     "higher chance of errors that need a full read-through, not a light one."
 )
 
-# Masterplan 1.4 / 2.9 — Settings copy for Accurate mode's reproducibility
-# choice. Deliberately does NOT frame "Consistent" as simply the safer
-# option: a real A/B test on one genuinely difficult recording (masterplan
-# 2.8) found temperature=0 ("Consistent") produced a LARGER and more
-# degenerate repetition-collapse than the fallback ladder ("Best effort")
-# on that same clip, even though pre-collapse quality was slightly better
-# and timing matched the ~3x baseline exactly. One data point, not a
-# settled rule — but "Consistent sounds safer" is not what was actually
-# measured, so the copy below says so plainly rather than defaulting to
-# the reassuring-sounding claim. Written to stand alone for Wave 5.2 (User
+# Masterplan 1.4 / 2.9 — Settings copy for the reproducibility choice.
+# Deliberately does NOT frame "Consistent" as simply the safer option: a real
+# A/B test on one genuinely difficult recording (masterplan 2.8, ACCURATE
+# MODE ONLY) found temperature=0 ("Consistent") produced a LARGER and more
+# degenerate repetition-collapse than the fallback ladder ("Best effort") on
+# that same clip, even though pre-collapse quality was slightly better and
+# timing matched the ~3x baseline exactly. One data point, not a settled
+# rule — but "Consistent sounds safer" is not what was actually measured, so
+# the copy below says so plainly rather than defaulting to the
+# reassuring-sounding claim. Written to stand alone for Wave 5.2 (User
 # Manual), not just as an in-app aside.
+#
+# Masterplan 3.2 extended this same setting to Fast mode, which shares the
+# identical underlying temperature-fallback mechanism (both modes ultimately
+# call openai-whisper's transcribe() with the same two temperature values —
+# verified, not assumed). The copy below is honest that the specific
+# measurements quoted (the ~3x timings, the repetition-collapse severity
+# finding) come from Golf 2.8's Accurate-mode-only test and have not been
+# separately measured for Fast mode — do not silently extend those numbers to
+# Fast mode without a real measurement, the same discipline this copy already
+# applies to Accurate mode's own claims.
 REPRODUCIBILITY_EXPLANATION = (
-    "Accurate mode can decode audio two ways. This changes speed and exact "
-    "repeatability — and, on genuinely difficult audio, it may also change "
-    "how a rare failure shows up if the model struggles. Neither option is "
-    "simply \"safer\"; read both before choosing.\n\n"
+    "This setting applies to both Fast and Accurate mode. Either mode can "
+    "decode audio two ways. This changes speed and exact repeatability — "
+    "and, on genuinely difficult audio, it may also change how a rare "
+    "failure shows up if the model struggles. Neither option is simply "
+    "\"safer\"; read both before choosing.\n\n"
     "Consistent (default): the same recording always produces the exact "
-    "same transcript, with no randomness, and runs at the documented ~3x-"
-    "real-time pace. On one real difficult test recording, though, "
-    "Consistent produced a MORE severe version of a rare failure (parts of "
-    "the transcript degenerating into repeated words) than Best effort did "
-    "on the same audio — so treat \"Consistent\" as meaning reproducible, "
-    "not automatically safer on hard audio.\n\n"
+    "same transcript, with no randomness. In Accurate mode this runs at the "
+    "documented ~3x-real-time pace; on one real difficult Accurate-mode test "
+    "recording, though, Consistent produced a MORE severe version of a rare "
+    "failure (parts of the transcript degenerating into repeated words) "
+    "than Best effort did on the same audio — so treat \"Consistent\" as "
+    "meaning reproducible, not automatically safer on hard audio.\n\n"
     "Best effort: retries unclear parts of the audio before settling on an "
-    "answer, which can occasionally give a slightly different transcript "
-    "if you run the same recording twice, and runs substantially slower "
-    "(up to ~3x slower than Consistent was measured on one difficult "
-    "clip). In that same test, its retries partly avoided the worst form "
-    "of the failure above — but this is one data point, not a guarantee "
-    "it will do so on other recordings.\n\n"
+    "answer, which can occasionally give a slightly different transcript if "
+    "you run the same recording twice, and (in Accurate mode) runs "
+    "substantially slower (up to ~3x slower than Consistent was measured on "
+    "one difficult clip). In that same test, its retries partly avoided the "
+    "worst form of the failure above — but this is one data point, not a "
+    "guarantee it will do so on other recordings, and Fast mode's own speed "
+    "and failure behaviour under each option have not been separately "
+    "measured.\n\n"
     "For most recordings — clear audio, one main speaker or language — "
-    "either option works well. For long, difficult, or heavily "
-    "overlapping/noisy recordings, consider trying both and comparing, "
-    "especially if a transcript looks like it starts repeating itself. "
-    "Always review the transcript against the audio for anything that "
-    "matters."
+    "either option works well in either mode. For long, difficult, or "
+    "heavily overlapping/noisy recordings, consider trying both and "
+    "comparing, especially if a transcript looks like it starts repeating "
+    "itself. Always review the transcript against the audio for anything "
+    "that matters."
 )
 
 # Masterplan 2.4 — real multipliers measured across golf 2.8/2.10's Accurate-
@@ -533,14 +580,30 @@ def release_fast_mode_model():
                "Accurate mode: %s", released)
 
 
-def transcribe_audio(path, *, language, task, model_name):
+def transcribe_audio(path, *, language, task, model_name, temperature=FAST_TEMPERATURE_BEST_EFFORT):
     """Run Whisper on `path` and return its result dict ({"text", "segments", ...}).
 
     This is the single seam through which all transcription flows. The three
     branches below are the exact language-dispatch logic (Afrikaans prompt,
-    other forced language, auto-detect) that previously lived inline in run().
-    Whisper is deterministic at temperature=0, so for fixed inputs this returns
-    byte-identical output regardless of where it is called from.
+    other forced language, auto-detect) that previously lived inline in run() —
+    this call-site invariance holds regardless of which branch executes, or of
+    where in the app this function is called from.
+
+    `temperature` (masterplan 3.2) mirrors transcribe_audio_accurate()'s own
+    parameter and the same division of responsibility: the caller
+    (start_transcription()) reads the user's Settings choice and translates it
+    to FAST_TEMPERATURE_CONSISTENT/FAST_TEMPERATURE_BEST_EFFORT before calling
+    here — this function never reads Settings itself. Defaults to
+    FAST_TEMPERATURE_BEST_EFFORT, openai-whisper's own default, so a caller
+    that omits it (as every caller did before this item) sees unchanged
+    behaviour. Only FAST_TEMPERATURE_CONSISTENT (plain 0.0, no sampling) is
+    actually deterministic; the default fallback ladder can retry a
+    low-confidence segment at a higher, sampling temperature, so — unlike the
+    old docstring here claimed — output is not guaranteed byte-identical
+    across runs unless "Consistent" is selected. The returned dict's
+    "reproducibility" key reports the label for the value ACTUALLY used to
+    decode (via _describe_fast_reproducibility()), not a re-derivation — the
+    same source-of-truth principle accurate_engine.transcribe() uses.
     """
     model = get_model(model_name)
 
@@ -565,11 +628,13 @@ def transcribe_audio(path, *, language, task, model_name):
         # injected English words, repetition loops), since the
         # previous-window context also suppresses that kind of
         # hallucination. Reverted; back to Whisper's default.
-        result = model.transcribe(path, task=task, language="af", initial_prompt=af_prompt)
+        result = model.transcribe(path, task=task, language="af", initial_prompt=af_prompt,
+                                   temperature=temperature)
     elif language:
-        result = model.transcribe(path, task=task, language=language)
+        result = model.transcribe(path, task=task, language=language, temperature=temperature)
     else:
-        result = model.transcribe(path, task=task)
+        result = model.transcribe(path, task=task, temperature=temperature)
+    result["reproducibility"] = _describe_fast_reproducibility(temperature)
     return result
 
 
@@ -634,9 +699,10 @@ def build_provenance(*, mode, language_label, task, diarized, num_speakers=None,
     identical to before this wave — and format_provenance_lines() below only
     ever renders lines for the ones that are present.
 
-    reproducibility (masterplan 2.9) follows the exact same additive
-    convention, and for the same reason: Fast mode has no reproducibility
-    setting of its own, so its call site never passes this either.
+    reproducibility (masterplan 2.9, extended to Fast mode by 3.2) follows the
+    same additive convention as model_id/etc., but is NOT Accurate-mode-only:
+    both call sites now pass it, sourced from their own engine's result dict
+    (result.get("reproducibility")), never re-derived from Settings here.
     """
     from datetime import datetime
     provenance = {
@@ -677,13 +743,15 @@ def format_provenance_lines(provenance):
         f"Task: {task_label}",
         f"Speaker identification: {diar_label}",
     ]
-    # Accurate-mode-only lines (masterplan 2.6, extended by 2.9). Only
-    # appended when present, so Fast-mode's footer is unchanged —
-    # build_provenance()'s Fast-mode call site never passes these keys, so
-    # they are simply absent here. Reproducibility (which decode strategy
-    # was actually used) is listed first among these, ahead of which model
-    # weights backed the run, since it describes decode-time behaviour
-    # rather than which model/weights were loaded.
+    # Optional lines, only appended when present. model_id/model_revision/
+    # model_layout/guard_verification (masterplan 2.6) remain Accurate-mode-
+    # only — build_provenance()'s Fast-mode call site never passes them, so
+    # they are simply absent here, unchanged since before this wave.
+    # Reproducibility (masterplan 2.9, extended to Fast mode by 3.2 — which
+    # decode strategy was actually used) is no longer Accurate-only, but is
+    # still listed first among these, ahead of which model weights backed the
+    # run, since it describes decode-time behaviour rather than which
+    # model/weights were loaded.
     if provenance.get("reproducibility"):
         lines.append(f"Reproducibility: {provenance['reproducibility']}")
     if provenance.get("model_id"):
@@ -755,9 +823,11 @@ class SettingsWindow(ctk.CTkToplevel):
         # reproducibility explanation below without clipping it — this window
         # is not scrollable and not user-resizable, so the geometry must
         # genuinely be tall enough, not just plausible-looking. Measured (not
-        # guessed) via winfo_reqheight() under Xvfb: real content needs
-        # ~644px; 700 leaves real, checked headroom rather than an arbitrary
-        # round number.
+        # guessed) via winfo_reqheight() under Xvfb: real content needed
+        # ~644px as of 2.9; masterplan 3.2 lengthened the explanation to cover
+        # both modes, re-measured at ~670px. 700 still leaves real, checked
+        # headroom (re-verify with winfo_reqheight() again if this copy grows
+        # further) rather than an arbitrary round number.
         self.geometry("520x700")
         self.resizable(False, False)
         self.grab_set()
@@ -791,10 +861,11 @@ class SettingsWindow(ctk.CTkToplevel):
             text_color="gray"
         ).pack(pady=2)
 
-        # Masterplan 1.4 / 2.9 — Accurate mode's reproducibility choice.
-        # Fast mode has no equivalent setting and never reads this key.
+        # Masterplan 1.4 / 2.9 — reproducibility choice. Originally
+        # Accurate-mode-only; masterplan 3.2 wired Fast mode to this same key,
+        # so one Settings choice now governs both modes.
         ctk.CTkLabel(
-            self, text="🔁 Accurate Mode — Reproducibility:", font=("Arial", 13, "bold")
+            self, text="🔁 Reproducibility (Fast and Accurate mode):", font=("Arial", 13, "bold")
         ).pack(pady=(20, 2))
         self.repro_var = ctk.StringVar(value=config.get("reproducibility", "Consistent"))
         ctk.CTkOptionMenu(
@@ -1512,11 +1583,23 @@ class StillScriptApp(ctk.CTk):
                 self._ui(self.progress_bar.set, 0.3)
                 self._ui(self.status_label.configure, text="Status: Processing audio...")
 
+                # Read fresh from disk, not self.config_data (loaded once at
+                # startup) — same reasoning as _transcribe_with_accurate_model()'s
+                # read (masterplan 2.9, extended to Fast mode by 3.2): a
+                # Settings change must reach the very next transcription, not
+                # require an app restart.
+                repro_choice = load_config().get("reproducibility", "Consistent")
+                temperature = (
+                    FAST_TEMPERATURE_CONSISTENT if repro_choice == "Consistent"
+                    else FAST_TEMPERATURE_BEST_EFFORT
+                )
+
                 result = transcribe_audio(
                     file_path,
                     language=lang_code,
                     task=whisper_task,
                     model_name=model_name,
+                    temperature=temperature,
                 )
 
                 self._ui(self.progress_bar.set, 0.7)
@@ -1541,6 +1624,12 @@ class StillScriptApp(ctk.CTk):
                     task=whisper_task,
                     diarized=do_diarize,
                     num_speakers=num_speakers,
+                    # Masterplan 3.2 — sourced from the result dict (the
+                    # ACTUAL temperature transcribe_audio() decoded with), not
+                    # re-read from Settings here. Same principle Accurate mode
+                    # already uses (2.6/2.9): if the two ever disagreed,
+                    # provenance must report reality, not the request.
+                    reproducibility=result.get("reproducibility"),
                 )
                 output_path = self._save_transcript(
                     transcript_text, file_path, provenance=provenance

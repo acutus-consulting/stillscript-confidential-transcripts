@@ -1008,6 +1008,103 @@ def test_sequence():
             app.diarize_var.set(False)
 
 
+    # ════════════════════════════════════════════════════════════════════════════
+    print("\n=== 7. Fast mode: the reproducibility Settings choice reaches the "
+          "REAL transcribe_audio() call site (masterplan 3.2) ===")
+    # ════════════════════════════════════════════════════════════════════════════
+    # transcribe_audio() is mocked here, same discipline section 4 used for
+    # transcribe_audio_accurate() — this section proves the UI -> load_config()
+    # -> temperature-translation -> call-site wiring is real, not that the
+    # underlying openai-whisper call itself receives the value (that is proven
+    # separately, with real audio and a real model, in
+    # test_fast_mode_reproducibility.py).
+    def start_fast_run(clip_path):
+        app.mode_var.set("fast")
+        app._select_fast_mode()
+        _next_file_path["value"] = clip_path
+        reset_mb()
+        app.start_transcription()
+
+    transcribe_calls_7 = []
+
+    def mock_transcribe_audio_7(path, *, language, task, model_name, temperature=None):
+        transcribe_calls_7.append({"model_name": model_name, "temperature": temperature})
+        # A faithful stand-in: derive "reproducibility" from the temperature it
+        # actually received, exactly as the real transcribe_audio() does — so
+        # this section also proves the provenance-relay wiring (result ->
+        # build_provenance(reproducibility=...) -> footer), not just the
+        # temperature-in half of the chain.
+        return {
+            "text": "vinnige toets",
+            "segments": [{"start": 0, "end": 1, "text": "vinnige toets"}],
+            "language": language,
+            "reproducibility": ds._describe_fast_reproducibility(temperature),
+        }
+
+    real_transcribe_audio = ds.transcribe_audio
+    ds.transcribe_audio = mock_transcribe_audio_7
+    app.diarize_var.set(False)  # keep this run simple; diarization is untouched by 3.2
+
+    had_config_7 = os.path.exists(ds.CONFIG_PATH)
+    original_config_raw_7 = None
+    if had_config_7:
+        with open(ds.CONFIG_PATH) as f:
+            original_config_raw_7 = f.read()
+    try:
+        for choice, expected_temp in (
+            ("Consistent", ds.FAST_TEMPERATURE_CONSISTENT),
+            ("Best effort", ds.FAST_TEMPERATURE_BEST_EFFORT),
+        ):
+            cfg = ds.load_config()
+            cfg["reproducibility"] = choice
+            ds.save_config(cfg)
+
+            transcribe_calls_7.clear()
+            start_fast_run(BENCH_CLIP)
+            ok = (yield from pump_until_gen(
+                lambda: len(mb_calls["showinfo"]) >= 1, timeout=30))
+            check(f"reproducibility='{choice}' completes a real Fast-mode run", ok)
+            check(f"...and reaches transcribe_audio() with "
+                  f"temperature={expected_temp!r} (the real call site, not "
+                  f"just UI state)",
+                  transcribe_calls_7
+                  and transcribe_calls_7[0].get("temperature") == expected_temp,
+                  transcribe_calls_7)
+            check(f"'{choice}' persists across a simulated reload (fresh "
+                  f"load_config() re-read from disk)",
+                  ds.load_config()["reproducibility"] == choice)
+
+            # Provenance correctness — the saved transcript's footer must
+            # report whichever reproducibility choice was actually used,
+            # sourced from the (mocked) engine's own result, not re-derived.
+            saved_files = [f for f in os.listdir(app._get_output_dir())
+                           if f.endswith(".txt") and "transcript" in f]
+            saved_files.sort(key=lambda f: os.path.getmtime(
+                os.path.join(app._get_output_dir(), f)))
+            check(f"a transcript .txt was saved for reproducibility='{choice}'",
+                  bool(saved_files))
+            if saved_files:
+                content = open(os.path.join(app._get_output_dir(), saved_files[-1]),
+                               encoding="utf-8").read()
+                check(f"provenance footer has 'Reproducibility: {choice}' for "
+                      f"Fast mode — previously this line never appeared at "
+                      f"all in a Fast-mode transcript",
+                      f"Reproducibility: {choice}" in content, content[-400:])
+                check("provenance footer's Mode line still says Fast, "
+                      "unaffected by this item",
+                      "Mode: Fast (Vinnig)" in content, content[-400:])
+    finally:
+        ds.transcribe_audio = real_transcribe_audio
+        if had_config_7:
+            with open(ds.CONFIG_PATH, "w") as f:
+                f.write(original_config_raw_7)
+        else:
+            try:
+                os.remove(ds.CONFIG_PATH)
+            except OSError:
+                pass
+
+
 
 
 _test_gen = test_sequence()
