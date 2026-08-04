@@ -20,6 +20,10 @@ build/
 dist/
 *.spec
 
+# Inno Setup build output (stillscript.iss now writes here, relative to the
+# script — Golf 3.1)
+installer_output/
+
 # Built executables. StillScript.exe is ~330 MB and was sitting untracked next
 # to the source; one `git add -A` would have committed it permanently.
 *.exe

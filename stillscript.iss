@@ -12,11 +12,14 @@
 ;     orphans that state.
 ;   * MyAppVersion. This rename is not a release.
 ;
-; ⚠ BUILD PATHS BELOW: these point at the local Windows build folder. The
-; folder itself must be renamed C:\Users\danie\Danscribe -> C:\Users\danie\
-; StillScript to match, or this script will not compile. The CI workflow
-; (.github/workflows/build-windows-release.yml) builds the .exe on a hosted
-; runner and does not use this file, so CI is unaffected either way.
+; BUILD PATHS: all source/output paths below are relative to this script's
+; own location ({#SourcePath}, set via SourceDir below), not to any specific
+; user account or machine. Check out the repo, run `pyinstaller` (or
+; equivalent) so dist\StillScript.exe exists alongside this .iss file, and
+; compile — no path edits needed regardless of Windows username or drive.
+; The CI workflow (.github/workflows/build-windows-release.yml) builds the
+; .exe on a hosted runner and does not use this file, so CI is unaffected
+; either way.
 ;
 ; The two bundled PDFs still carry their DanScribe-era filenames and content.
 ; They are stale v2 documents that Golf 5.1/5.2 (README / User Manual) will
@@ -38,9 +41,10 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\StillScript
 DefaultGroupName={#MyAppShortName}
 AllowNoIcons=yes
-OutputDir=C:\Users\danie\StillScript\installer_output
+SourceDir={#SourcePath}
+OutputDir={#SourcePath}installer_output
 OutputBaseFilename=StillScript_Setup_v3.1.0
-SetupIconFile=C:\Users\danie\StillScript\stillscript.ico
+SetupIconFile={#SourcePath}stillscript.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -55,10 +59,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "C:\Users\danie\StillScript\dist\StillScript.exe";           DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\danie\StillScript\DanScribe_UserGuide_v2.pdf";     DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\danie\StillScript\DanScribe_ReleaseNotes_v2.pdf";  DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\danie\StillScript\README.md";                      DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\StillScript.exe";           DestDir: "{app}"; Flags: ignoreversion
+Source: "DanScribe_UserGuide_v2.pdf";     DestDir: "{app}"; Flags: ignoreversion
+Source: "DanScribe_ReleaseNotes_v2.pdf";  DestDir: "{app}"; Flags: ignoreversion
+Source: "README.md";                      DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppShortName}";            Filename: "{app}\{#MyAppExeName}"
