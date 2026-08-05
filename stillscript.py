@@ -331,6 +331,31 @@ ACCURATE_MODE_SCOPE_NOTE = (
     "higher chance of errors that need a full read-through, not a light one."
 )
 
+# Masterplan 4.4 — the Task selector's allowed values, per mode.
+#
+# Fast mode runs STOCK Whisper Medium through openai-whisper's own
+# transcribe(), which fully supports the translate task; it keeps both.
+#
+# Accurate mode runs the Afrikaans-LoRA-merged large-v3 and offers ONLY
+# "Original Language". Translate is withdrawn there because it fails
+# SILENTLY and catastrophically on that model: a real 2026-08-05 run
+# produced 39 words (3.5%) of genuine English and then reverted to plain
+# Afrikaans for the remaining 1083 words (96.5%) — while still being
+# labelled and saved as a translation. A user who does not read Afrikaans
+# has no way to notice. Silently wrong output is strictly worse than an
+# unavailable feature, so this is a hard restriction (the value is removed
+# from the menu and force-reset), not an advisory notice like the
+# mode-scope notes above. See masterplan item 4.4 for the root cause.
+TASK_CHOICES_FAST = ["Original Language", "Translate to English"]
+TASK_CHOICES_ACCURATE = ["Original Language"]
+
+ACCURATE_TASK_SCOPE_NOTE = (
+    "⚠ \"Translate to English\" is not available in Accurate mode. On this "
+    "Afrikaans-tuned model it silently stops translating after the first few "
+    "seconds and returns Afrikaans for the rest — while still labelling the "
+    "file a translation. Use Fast mode if you need an English translation."
+)
+
 # Masterplan 1.4 / 2.9 — Settings copy for the reproducibility choice.
 # Deliberately does NOT frame "Consistent" as simply the safer option: a real
 # A/B test on one genuinely difficult recording (masterplan 2.8, ACCURATE
@@ -626,7 +651,26 @@ def transcribe_audio(path, *, language, task, model_name, temperature=FAST_TEMPE
         # injected English words, repetition loops), since the
         # previous-window context also suppresses that kind of
         # hallucination. Reverted; back to Whisper's default.
-        result = model.transcribe(path, task=task, language="af", initial_prompt=af_prompt,
+        #
+        # Masterplan 4.4 — af_prompt is applied ONLY when transcribing.
+        # It exists to bias the decoder toward Afrikaans orthography, which
+        # is exactly right for task="transcribe" and actively destructive
+        # for task="translate": it pulls the output back toward Afrikaans/
+        # Dutch precisely when English is wanted. Measured on a real 90s
+        # Afrikaans clip (stock Whisper Medium, temperature=0, same audio
+        # both runs): WITH the prompt, output was 3.9% English-exclusive /
+        # 19.7% Afrikaans / 12.7% Dutch ("Elke vrijdag maak os malvleis van
+        # mythes...") — i.e. it never translated at all. WITHOUT it, the
+        # same clip gave 32.9% English-exclusive / 0.4% Afrikaans / 0.0%
+        # Dutch and fluent output ("Every Friday we make a lot of myths and
+        # nonsense. This morning we focus on one of the world's most
+        # controversial politicians, Donald Trump."). Transcription
+        # behaviour is deliberately untouched — the prompt still applies in
+        # full on the task="transcribe" path this product's Afrikaans
+        # quality was actually tuned and measured on.
+        prompt_for_task = af_prompt if task == "transcribe" else None
+        result = model.transcribe(path, task=task, language="af",
+                                   initial_prompt=prompt_for_task,
                                    temperature=temperature)
     elif language:
         result = model.transcribe(path, task=task, language=language, temperature=temperature)
@@ -1471,10 +1515,22 @@ class StillScriptApp(ctk.CTk):
         # 1. Task
         ctk.CTkLabel(self, text="1. Select Task:", font=("Arial", 17, "bold")).pack(pady=(10, 2))
         self.task_var = ctk.StringVar(value="Translate to English")
-        ctk.CTkOptionMenu(
-            self, values=["Original Language", "Translate to English"],
+        # Kept as an attribute (masterplan 4.4): _select_accurate_mode() has to
+        # restrict this menu's values at runtime, so it can no longer be an
+        # anonymous throwaway widget.
+        self.task_menu = ctk.CTkOptionMenu(
+            self, values=TASK_CHOICES_FAST,
             variable=self.task_var, width=455
-        ).pack(pady=5)
+        )
+        self.task_menu.pack(pady=5)
+        # Masterplan 4.4 — shown only while Accurate mode has Translate
+        # withdrawn, so the option's absence is explained rather than just
+        # silently missing. Empty (and therefore invisible) in Fast mode.
+        self.task_scope_label = ctk.CTkLabel(
+            self, text="", font=("Arial", 13),
+            text_color="#e0a458", justify="center", wraplength=550,
+        )
+        self.task_scope_label.pack(pady=(0, 2))
 
         # 2. Language
         ctk.CTkLabel(self, text="2. Audio Language:", font=("Arial", 17, "bold")).pack(pady=(10, 2))
@@ -1594,12 +1650,37 @@ class StillScriptApp(ctk.CTk):
         self.fast_btn.configure(fg_color="#1f538d")
         self.accurate_btn.configure(fg_color="gray30")
         self.mode_scope_label.configure(text=FAST_MODE_SCOPE_NOTE)
+        # Masterplan 4.4 — Fast mode runs stock Whisper Medium, whose
+        # translate task works normally, so the full choice comes back.
+        # Whatever the user had selected before switching to Accurate is NOT
+        # restored: Accurate forcibly reset it to "Original Language", and
+        # silently flipping them back to Translate on a mode switch would be
+        # a surprising change they never asked for.
+        self.task_menu.configure(values=TASK_CHOICES_FAST)
+        self.task_scope_label.configure(text="")
+
+    def _apply_accurate_task_restriction(self):
+        """Withdraw "Translate to English" while Accurate mode is active
+        (masterplan 4.4).
+
+        Removing the value from the menu is not enough on its own — task_var
+        may already hold "Translate to English" (it is the app's default at
+        startup), and CTkOptionMenu does not clear a variable just because
+        its value is no longer in `values`. So the variable is force-reset
+        too; start_transcription() re-checks this independently as
+        defence-in-depth.
+        """
+        self.task_menu.configure(values=TASK_CHOICES_ACCURATE)
+        if self.task_var.get() not in TASK_CHOICES_ACCURATE:
+            self.task_var.set(TASK_CHOICES_ACCURATE[0])
+        self.task_scope_label.configure(text=ACCURATE_TASK_SCOPE_NOTE)
 
     def _select_accurate_mode(self):
         self.mode_var.set("accurate")
         self.accurate_btn.configure(fg_color="#1f538d")
         self.fast_btn.configure(fg_color="gray30")
         self.mode_scope_label.configure(text=ACCURATE_MODE_SCOPE_NOTE)
+        self._apply_accurate_task_restriction()
 
     # ── SETTINGS / CREDITS ──────────────────
 
@@ -1643,6 +1724,32 @@ class StillScriptApp(ctk.CTk):
         save_config(self.config_data)
 
         task_choice = self.task_var.get()
+
+        # Masterplan 4.4 — defence-in-depth. _select_accurate_mode() already
+        # withdraws Translate from the menu and force-resets task_var, so a
+        # user cannot normally get here in this state. This re-check exists
+        # because the failure it prevents is SILENT: a translated-labelled
+        # file that is 96% untranslated Afrikaans is not something the user
+        # can spot afterwards, so a stale variable, a future refactor, or a
+        # startup-ordering change must not be able to reintroduce it.
+        # Correcting and continuing (rather than aborting) keeps the user's
+        # actual goal — a transcript — intact, and says plainly what changed.
+        if mode == "accurate" and task_choice == "Translate to English":
+            logger.warning(
+                "Translate task blocked for Accurate mode (masterplan 4.4); "
+                "falling back to Original Language."
+            )
+            self._apply_accurate_task_restriction()
+            task_choice = self.task_var.get()
+            messagebox.showwarning(
+                "StillScript",
+                "\"Translate to English\" is not available in Accurate mode — "
+                "on this Afrikaans-tuned model it silently stops translating "
+                "partway through and returns Afrikaans for the rest.\n\n"
+                "This recording will be transcribed in its original language "
+                "instead. Use Fast mode if you need an English translation.",
+            )
+
         language_label = self.lang_var.get()
         lang_code = LANG_CODES[language_label]
         whisper_task = "translate" if task_choice == "Translate to English" else "transcribe"
