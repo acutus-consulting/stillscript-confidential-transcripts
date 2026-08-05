@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 import customtkinter as ctk
@@ -955,44 +956,73 @@ class CreditsWindow(ctk.CTkToplevel):
         self.resizable(False, False)
         self.grab_set()
 
+        # Masterplan 4.5 — Danie reproduced this window's content area
+        # rendering completely empty (no logo, no text, nothing — just this
+        # dark theme's own background fill) on his REAL Linux desktop,
+        # running `python stillscript.py` directly, with the window's own
+        # title bar drawn correctly by a real window manager. That last
+        # detail is the whole diagnosis: title/geometry/resizable/grab_set()
+        # above already ran successfully by the time the title bar exists,
+        # so if anything below raises, EVERY widget from that point on —
+        # every label, the credits list, the Close button — simply never
+        # gets created, leaving a bare Toplevel showing only its background.
+        # This ALSO rules out masterplan 4.2's fix attempt: customtkinter's
+        # ScalingTracker DPI-scaling/alpha mechanism it targeted is
+        # Windows-only (see scaling_tracker.py — every branch that touches
+        # `window.attributes("-alpha", ...)` is gated on
+        # `sys.platform.startswith("win")`) and cannot run on Linux at all,
+        # yet the bug reproduced there. That fix is NOT trusted as real
+        # anymore; the `self.after(...)` alpha line is left below only
+        # because it is free and harmless, not because it is believed to be
+        # doing anything.
+        #
+        # Xvfb has now passed this exact code twice, screenshots included,
+        # and cannot be trusted to catch whatever this actually is — so
+        # rather than guess a third time, everything that builds this
+        # window's content is wrapped in one handler below that captures the
+        # real exception, if there is one: full traceback logged to
+        # ~/.stillscript.log AND printed to stderr (visible in a live
+        # terminal), plus a visible on-screen message so this window can
+        # never be silently blank for any user again, not just during
+        # diagnosis. See masterplan item 4.5 for what to do with the result.
+        try:
+            self._build_content()
+        except Exception:
+            tb = traceback.format_exc()
+            logger.error("CreditsWindow failed to build its content:\n%s", tb)
+            print("=" * 70, file=sys.stderr)
+            print("StillScript: the About window failed to build its content. "
+                  "Full traceback below (also written to ~/.stillscript.log):",
+                  file=sys.stderr)
+            print(tb, file=sys.stderr)
+            print("=" * 70, file=sys.stderr)
+            for child in self.winfo_children():
+                child.destroy()
+            ctk.CTkLabel(
+                self,
+                text="⚠️ This window failed to load.\n\n"
+                     "Details were written to ~/.stillscript.log and printed "
+                     "to the terminal.",
+                font=("Arial", 17, "bold"), text_color="#e0a458",
+                justify="center", wraplength=550,
+            ).pack(expand=True, padx=30, pady=30)
+            ctk.CTkButton(
+                self, text="Close", command=self.destroy, width=190,
+            ).pack(pady=(0, 24))
+
+    def _build_content(self):
+        """Everything that actually builds this window's widgets — split out
+        of __init__ (masterplan 4.5) so __init__ can wrap the whole thing in
+        one try/except; see the comment there for why.
+        """
         # Masterplan 4.2 — the real mark, primary horizontal lockup, at the
         # brand guide's own "generous room" size (page 2). Same asset the
         # main window's banner uses, just a larger height, so the lockup's
-        # own aspect ratio (never stretched) still holds.
-        #
-        # Masterplan 4.2 (2026-08-04 follow-up) — Danie reported this window rendering completely
-        # empty (no logo, no text at all) on his real desktop, which never
-        # reproduced under Xvfb. Investigated rather than guess-fixed: read
-        # customtkinter 5.2.2's actual source (ctk_image.py, ctk_label.py).
-        # CTkImage already caches its rendered PhotoImage objects in
-        # self._scaled_light/dark_photo_images, and CTkLabel holds the
-        # CTkImage as self._image — so the classic "PhotoImage GC'd because
-        # nothing but a local var referenced it" bug does NOT appear to
-        # apply to this code as written. `self._about_logo` below is kept
-        # anyway, at zero cost, as defense-in-depth against that exact
-        # failure mode (matches the same discipline _set_app_icon() already
-        # uses for the raw ImageTk.PhotoImage case, where it truly matters).
-        #
-        # A more specific, code-confirmed candidate was found instead:
-        # customtkinter's ScalingTracker.check_dpi_scaling() (scaling_tracker.py)
-        # runs on a 100ms timer on Windows and, when it detects the process's
-        # monitor DPI scaling has changed (e.g. the window moved to a
-        # differently-scaled monitor, or Windows re-queries DPI after the
-        # window settles), sets window.attributes("-alpha", 0.15) — making it
-        # nearly invisible — while it rescales every widget, then restores
-        # alpha to 1. If that rescale sequence is ever interrupted, the
-        # window can be left stuck at alpha 0.15: visually indistinguishable
-        # from "completely empty". This is a real Windows-HiDPI/multi-monitor
-        # mechanism Xvfb (one virtual display, no real DPI variance) cannot
-        # trigger or catch — consistent with Danie seeing it and Xvfb never
-        # catching it. Not disabling customtkinter's own DPI system (too
-        # blunt an intervention without being certain this is the cause);
-        # instead a cheap, targeted safety net at the end of __init__ below
-        # forces alpha back to 1 shortly after the window is built, in case
-        # this exact sequence is what happened. This is the best evidence-
-        # based fix possible without a real Windows machine to reproduce on
-        # (see Golf 6.1) — NOT a confirmed root cause, and Danie's own
-        # real-desktop confirmation is still needed; see the masterplan entry.
+        # own aspect ratio (never stretched) still holds. Kept as its own,
+        # narrower try/except (unlike the outer one around this whole
+        # method): a missing/corrupt logo file alone should still let the
+        # rest of the window — the actually useful content — render
+        # normally, not take the whole window down with it.
         try:
             img = Image.open(resource_path("stillscript_logo_horizontal_white.png"))
             logo_h = 110
@@ -1042,8 +1072,12 @@ class CreditsWindow(ctk.CTkToplevel):
             width=190, fg_color="#1f538d"
         ).pack(pady=(6, 16))
 
-        # Masterplan 4.2 (2026-08-04 follow-up) safety net — see the long comment above the logo
-        # block for why. Cheap and harmless if nothing was ever wrong.
+        # Masterplan 4.2 (2026-08-04 follow-up) — DISCONFIRMED as of masterplan
+        # 4.5: the mechanism this targets (customtkinter's ScalingTracker
+        # alpha dimming) is Windows-only and cannot run on the Linux desktop
+        # Danie reproduced the bug on. Left in place because it is free and
+        # harmless, not because it is believed to fix anything — see the long
+        # comment in __init__ above.
         self.after(400, lambda: self.attributes("-alpha", 1.0))
 
 # ─────────────────────────────────────────────
