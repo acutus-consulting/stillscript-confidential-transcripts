@@ -357,6 +357,33 @@ ACCURATE_TASK_SCOPE_NOTE = (
     "file a translation. Use Fast mode if you need an English translation."
 )
 
+# Masterplan 4.7 — speaker attribution is materially less reliable when the
+# task is Translate, and this is a real, measured limitation, not a caution.
+#
+# _attach_speakers() apportions a segment's words across the speaker turns it
+# spans IN PROPORTION TO DURATION, taking the first N words for the first
+# speaker, the next N for the second, and so on. That is only sound if the
+# text's word order runs monotonically with time — true for transcription
+# (words come out in the order they were spoken) but NOT for translation,
+# which reorders clauses (Afrikaans is verb-final in subordinate clauses,
+# English is not) and changes word counts. The first 70% of the ENGLISH words
+# are not necessarily what was said in the first 70% of the segment.
+#
+# Word-level timestamps would normally be the fix — but openai-whisper itself
+# warns, in its own source (transcribe.py: `if word_timestamps and task ==
+# "translate": warnings.warn("Word-level timestamps on translations may not
+# be reliable.")`), that they are unreliable for exactly this task, because
+# the cross-attention alignment they are derived from is not monotonic when
+# the output is a translation. So the obvious fix does not rescue this path
+# either. See masterplan 4.7 for the structural options.
+DIARIZE_TRANSLATE_WARNING = (
+    "⚠ Speaker labels are less reliable when translating. Speaker turns are "
+    "matched to the text by timing, and translation reorders words — so who "
+    "said what can be attributed to the wrong speaker near a speaker change. "
+    "For accurate speaker attribution, run the recording again with "
+    "\"Original Language\" and use that version to check who said what."
+)
+
 # Masterplan 1.4 / 2.9 — Settings copy for the reproducibility choice.
 # Deliberately does NOT frame "Consistent" as simply the safer option: a real
 # A/B test on one genuinely difficult recording (masterplan 2.8, ACCURATE
@@ -1647,6 +1674,21 @@ class StillScriptApp(ctk.CTk):
             width=85
         ).pack(side="left")
 
+        # Masterplan 4.7 — shown only while Translate is the selected task,
+        # since that is the only combination where the attribution
+        # approximation actually degrades. Empty (invisible) otherwise, same
+        # pattern as the task/mode scope notices above. A trace on task_var
+        # rather than the menu's command= callback: task_var is also set
+        # programmatically by _select_accurate_mode()'s restriction, and a
+        # command= callback would not fire for that.
+        self.diarize_scope_label = ctk.CTkLabel(
+            self, text="", font=("Arial", 13),
+            text_color="#e0a458", justify="center", wraplength=550,
+        )
+        self.diarize_scope_label.pack(pady=(2, 0))
+        self.task_var.trace_add("write", lambda *_: self._update_diarize_scope_note())
+        self._update_diarize_scope_note()
+
         # Status & progress
         self.status_label = ctk.CTkLabel(self, text="Ready", font=("Arial", 17), text_color="gray")
         self.status_label.pack(pady=(20, 5))
@@ -1708,6 +1750,18 @@ class StillScriptApp(ctk.CTk):
         # a surprising change they never asked for.
         self.task_menu.configure(values=TASK_CHOICES_FAST)
         self.task_scope_label.configure(text="")
+
+    def _update_diarize_scope_note(self):
+        """Show the speaker-attribution caveat only while Translate is
+        selected (masterplan 4.7). Deliberately shown regardless of whether
+        the diarization switch is currently on: it is the reason a user
+        might choose NOT to turn it on, so hiding it until after they enable
+        it would surface it too late to inform the decision.
+        """
+        if self.task_var.get() == "Translate to English":
+            self.diarize_scope_label.configure(text=DIARIZE_TRANSLATE_WARNING)
+        else:
+            self.diarize_scope_label.configure(text="")
 
     def _apply_accurate_task_restriction(self):
         """Withdraw "Translate to English" while Accurate mode is active
