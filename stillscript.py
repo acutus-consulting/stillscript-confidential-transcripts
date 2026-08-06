@@ -954,38 +954,54 @@ class CreditsWindow(ctk.CTkToplevel):
         # real content needs 566px; 600 leaves real, checked headroom.
         self.geometry("700x750")
         self.resizable(False, False)
-        self.grab_set()
 
-        # Masterplan 4.5 — Danie reproduced this window's content area
-        # rendering completely empty (no logo, no text, nothing — just this
-        # dark theme's own background fill) on his REAL Linux desktop,
-        # running `python stillscript.py` directly, with the window's own
-        # title bar drawn correctly by a real window manager. That last
-        # detail is the whole diagnosis: title/geometry/resizable/grab_set()
-        # above already ran successfully by the time the title bar exists,
-        # so if anything below raises, EVERY widget from that point on —
-        # every label, the credits list, the Close button — simply never
-        # gets created, leaving a bare Toplevel showing only its background.
-        # This ALSO rules out masterplan 4.2's fix attempt: customtkinter's
-        # ScalingTracker DPI-scaling/alpha mechanism it targeted is
-        # Windows-only (see scaling_tracker.py — every branch that touches
-        # `window.attributes("-alpha", ...)` is gated on
-        # `sys.platform.startswith("win")`) and cannot run on Linux at all,
-        # yet the bug reproduced there. That fix is NOT trusted as real
-        # anymore; the `self.after(...)` alpha line is left below only
-        # because it is free and harmless, not because it is believed to be
-        # doing anything.
+        # Masterplan 4.6 — Danie's REAL terminal output (not a guess this
+        # time) gave the actual root cause of the empty-content bug golf 4.5
+        # could only diagnose around: `tkinter.TclError: grab failed: window
+        # not viewable` from the grab_set() call that used to sit right
+        # here, unguarded, before any content was built. Tk's grab_set()
+        # requires the window to already be mapped on screen by the window
+        # manager; a freshly-created Toplevel is not viewable yet at the
+        # moment its own constructor runs — there's a real WM round-trip
+        # (map request -> configure -> MapNotify) still in flight. Under
+        # Xvfb (no real window manager, or a much faster one) that race
+        # apparently never loses; under Danie's real desktop WM it did, the
+        # TclError propagated out of the button-click callback uncaught by
+        # US (Tkinter's own default report_callback_exception printed
+        # "Exception in Tkinter callback" instead — see below), and
+        # __init__ aborted before a single widget existed. This ALSO
+        # definitively rules out both earlier hypotheses: golf 4.2's
+        # Windows-only DPI-alpha mechanism and golf 4.5's emoji/TclError
+        # theory — neither produces this traceback.
         #
-        # Xvfb has now passed this exact code twice, screenshots included,
-        # and cannot be trusted to catch whatever this actually is — so
-        # rather than guess a third time, everything that builds this
-        # window's content is wrapped in one handler below that captures the
-        # real exception, if there is one: full traceback logged to
-        # ~/.stillscript.log AND printed to stderr (visible in a live
-        # terminal), plus a visible on-screen message so this window can
-        # never be silently blank for any user again, not just during
-        # diagnosis. See masterplan item 4.5 for what to do with the result.
+        # Fix: self.wait_visibility() blocks until this window is actually
+        # viewable — Tk's own documented answer to this exact error — before
+        # grab_set() is attempted. Two alternatives were considered and
+        # rejected: update_idletasks() only flushes Tk's internal idle/
+        # geometry queue, not the X server's MapNotify the WM sends, so it
+        # does not actually guarantee viewability; a fixed self.after(N, ...)
+        # delay is a guess at how long a given WM/system needs, which is
+        # exactly the kind of unproven timing hack this bug has already
+        # burned one guess on (golf 4.2's alpha safety net). wait_visibility()
+        # blocks for exactly as long as it actually takes on whatever
+        # machine this runs on, no more, no less — deterministic rather than
+        # a guess. No other window in this file (Settings, NameAssignWindow,
+        # the three Accurate-mode dialogs) does this either; they share the
+        # identical unguarded grab_set()-right-after-geometry() pattern and
+        # are therefore theoretically equally exposed to this same race —
+        # deliberately NOT touched here, out of scope for this item, but
+        # worth knowing if one of them is ever reported doing the same thing.
+        #
+        # Also fixes a real gap the previous task's try/except left open:
+        # that block only wrapped _build_content(), not grab_set() — which
+        # is exactly why Tkinter's own default handler caught this failure
+        # instead of our logging. grab_set() is now inside the try below too,
+        # so a recurrence of this exact error (or anything else at this
+        # point) is caught, logged in full, and shown on screen — not
+        # silently handled by Tkinter's default stderr printer.
         try:
+            self.wait_visibility()
+            self.grab_set()
             self._build_content()
         except Exception:
             tb = traceback.format_exc()
